@@ -1,0 +1,14 @@
+# Only app/ and requirements.txt belong in the image. Excluding the rest keeps
+# the build context small, which matters most for the emulated arm/386 builds.
+.git
+.github
+.gitignore
+cache
+config
+nginx
+docker-compose*.yml
+README.md
+__pycache__
+**/__pycache__
+*.py[cod]
+.DS_Store

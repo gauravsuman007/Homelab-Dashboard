@@ -1,0 +1,41 @@
+# Portable as written: no addresses, no host paths, no reverse-proxy specifics.
+# The docker socket is the only input. Everything else -- which reverse proxy is
+# in front, where its config lives, which addresses mean "this box", and the URLs
+# to link to -- is discovered at runtime.
+services:
+  lan-landing:
+    # Multi-arch image (amd64, 386, arm/v7, arm64) published by CI on every push,
+    # so this same file works on a server, a NAS, or a Pi. Update with
+    # `docker compose pull && docker compose up -d`.
+    image: ghcr.io/gauravsuman007/servercontainerslandingpage:latest
+    # To run your own build instead, uncomment this and use `up -d --build`.
+    # build: .
+    container_name: lan-landing
+    restart: unless-stopped
+    ports:
+      # Published on all interfaces so the reverse-proxy container can reach it
+      # via the host. Exposure is controlled at the edge, in nginx/lan-landing.conf.
+      - '8500:8500'
+    environment:
+      SITE_TITLE: Home Server
+      REFRESH_SECONDS: '30'
+      PROBE_TIMEOUT: '2'
+      # Set to true to also list stopped containers, greyed out.
+      INCLUDE_STOPPED: 'false'
+      # Optional, and normally unnecessary -- see README "Auto-detection".
+      # HOST_IPS: 192.168.2.100,100.66.174.116
+      # EDGE_CONFIG_DIR: /npm/proxy_host
+    volumes:
+      # The only required mount. Discovery lists and inspects containers, and
+      # reads the reverse proxy's config through the API's archive endpoint.
+      # Note :ro protects the socket *file*, not the API -- see README.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config:/config:ro
+      - ./cache:/cache
+    healthcheck:
+      test: ['CMD', 'python', '-c',
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8500/healthz',timeout=5).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

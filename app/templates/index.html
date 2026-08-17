@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{ title }}</title>
+<link rel="icon" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <span class="dot-logo"></span>
+    <h1>{{ title }}</h1>
+  </div>
+  <div class="stats">
+    <span id="stat-online"><strong>{{ online }}</strong>/{{ total }} up</span>
+    <span class="sep">·</span>
+    <span><strong>{{ public }}</strong> public</span>
+  </div>
+  <input id="filter" type="search" placeholder="Filter…" autocomplete="off" spellcheck="false" aria-label="Filter services">
+</header>
+
+{% if error %}
+<p class="banner">Discovery error — showing the last known state. {{ error }}</p>
+{% endif %}
+
+<main id="grid">
+{% for category, items in categories.items() %}
+  <section class="cat" data-cat="{{ category }}">
+    <h2>{{ category }} <span class="count">{{ items|length }}</span></h2>
+    <div class="cards">
+    {% for a in items %}
+      <article class="card{% if a.online is false %} down{% endif %}{% if not a.running %} stopped{% endif %}"
+               data-key="{{ a.key }}" data-name="{{ a.name|lower }} {{ a.key|lower }} {{ a.image|lower }}">
+        <a class="hit" href="{{ a.lan_url or a.public_urls[0] }}" target="_blank" rel="noreferrer">
+          <img class="icon" src="/icon/{{ a.icon }}" alt="" loading="lazy" width="40" height="40">
+          <span class="meta">
+            <span class="name">{{ a.name }}</span>
+            <span class="sub">{{ a.lan_url.split('//')[1] if a.lan_url else a.public_urls[0].split('//')[1] }}</span>
+          </span>
+          <span class="status" title="{{ 'reachable' if a.online else ('unreachable' if a.online is false else 'not probed') }}"></span>
+        </a>
+        {% if a.public_urls %}
+        <div class="links">
+          {% for url in a.public_urls %}
+          <a class="pub" href="{{ url }}" target="_blank" rel="noreferrer" title="Public: {{ url }}">
+            <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M1.6 8h12.8M8 1.4c3.4 3.6 3.4 9.6 0 13.2M8 1.4c-3.4 3.6-3.4 9.6 0 13.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            {{ url.split('//')[1] }}
+          </a>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </article>
+    {% endfor %}
+    </div>
+  </section>
+{% endfor %}
+</main>
+
+{% if total == 0 %}
+<p class="empty">No services discovered yet — the first scan takes a few seconds. This page refreshes itself.</p>
+{% endif %}
+
+<footer>
+  <span id="updated"></span> · <a href="/api/apps">JSON</a>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

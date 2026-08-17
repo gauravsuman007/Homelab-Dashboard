@@ -1,0 +1,14 @@
+# Downloaded service icons, refilled on demand.
+cache/
+
+# Rendered by nginx/apply.sh from lan-landing.conf.template, host-specific.
+nginx/lan-landing.generated.conf
+
+# Local overrides of docker-compose.yml (compose merges this automatically).
+docker-compose.override.yml
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store

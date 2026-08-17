@@ -1,0 +1,177 @@
+# Display overrides for the landing page. Everything here is optional --
+# containers with a published port appear whether or not they are listed. This
+# file only supplies what cannot be discovered, or what discovery gets ugly.
+#
+# Reloaded on every scan (default 30s), so edits appear without a restart.
+#
+# Per-container keys, under `apps:`. The key is the container name, or a prefix
+# of it -- useful for compose-generated names that carry a project prefix and a
+# numeric scale suffix, e.g. `audiobookbay_downloader-jackett` matches
+# `audiobookbay_downloader-jackett-1`.
+#
+#   name:      card title                (default: prettified container name)
+#   icon:      slug from dashboard-icons  (default: guessed from the image name)
+#              https://github.com/homarr-labs/dashboard-icons -- try the
+#              service's own name first; unknown slugs fall back to a letter
+#              tile, they do not break the card. Riven, Decypharr and
+#              AudiobookBay have no upstream icon as of Aug 2026 and are
+#              deliberately left on their letter tiles -- drop a file into
+#              cache/icons/<slug>.webp (or .svg) to supply one by hand; the
+#              cache is only ever refilled for slugs with no file, and a
+#              zero-byte file there is the "known missing" marker.
+#   category:  section heading            (default: Other)
+#   port:      host port of the web UI    (default: chosen from published ports)
+#              REQUIRED for containers on the host network, which publish
+#              nothing the Docker API can report.
+#   scheme:    http | https               (default: http)
+#   url:       full LAN URL, replacing host:port entirely
+#   hidden:    true to drop the card even though it has a port
+#
+# A container listed here is shown even if its image is on the infrastructure
+# denylist in discovery.py -- listing it is taken as "I mean this one".
+
+defaults:
+  category: Other
+
+apps:
+  # --- Media -----------------------------------------------------------
+  jellyfin:
+    name: Jellyfin
+    icon: jellyfin
+    category: Media
+    port: 8096          # host-network container: not discoverable, must be set
+  seerr:
+    name: Seerr
+    icon: jellyseerr
+    category: Media
+  audiobookshelf:
+    name: Audiobookshelf
+    icon: audiobookshelf
+    category: Media
+  stash:
+    name: Stash
+    icon: stash
+    category: Media
+  immich_server:
+    name: Immich
+    icon: immich
+    category: Media
+
+  # --- Automation ------------------------------------------------------
+  radarr:
+    name: Radarr
+    icon: radarr
+    category: Automation
+  sonarr:
+    name: Sonarr
+    icon: sonarr
+    category: Automation
+  whisparr:
+    name: Whisparr
+    icon: whisparr
+    category: Automation
+  prowlarr:
+    name: Prowlarr
+    icon: prowlarr
+    category: Automation
+  riven:
+    name: Riven API
+    icon: riven
+    category: Automation
+  riven-frontend:
+    name: Riven
+    icon: riven
+    category: Automation
+  audiobookbay_downloader-jackett:
+    name: Jackett
+    icon: jackett
+    category: Automation
+
+  # --- Downloads -------------------------------------------------------
+  rdtclient:
+    name: RDT Client
+    icon: rdt-client
+    category: Downloads
+  decypharr_torbox:
+    name: Decypharr (TorBox)
+    icon: decypharr
+    category: Downloads
+  decypharr_local:
+    name: Decypharr (Local)
+    icon: decypharr
+    category: Downloads
+  audiobookbay_downloader-audiobookbay-downloader:
+    name: AudiobookBay
+    icon: audiobookbay
+    category: Downloads
+
+  # --- Documents & Web -------------------------------------------------
+  paperless-ngx:
+    name: Paperless-ngx
+    icon: paperless-ngx
+    category: Documents
+  wordpress_gaurav:
+    name: WordPress
+    icon: wordpress
+    category: Documents
+
+  # --- Projects --------------------------------------------------------
+  zvg-scraper:
+    name: ZVG Scraper
+    icon: openproject
+    category: Projects
+  zvg-scraper-home:
+    name: ZVG Scraper (Home)
+    icon: openproject
+    category: Projects
+
+  # --- Infrastructure --------------------------------------------------
+  docker-ui-portainer:
+    name: Portainer
+    icon: portainer
+    category: Infrastructure
+  nginx-proxy-manager-nginx:
+    name: Nginx Proxy Manager
+    icon: nginx-proxy-manager
+    category: Infrastructure
+    port: 81            # 80/443 are the proxy itself; 81 is the admin UI
+  uptimeKuma:
+    name: Uptime Kuma
+    icon: uptime-kuma
+    category: Infrastructure
+  guacamole:
+    name: Guacamole
+    icon: apache-guacamole
+    category: Infrastructure
+
+  # --- Not currently running, listed so they are labelled correctly if
+  #     they come back up (or if INCLUDE_STOPPED is enabled).
+  metube:
+    name: MeTube
+    icon: metube
+    category: Downloads
+  jdownloader:
+    name: JDownloader
+    icon: jdownloader
+    category: Downloads
+  megabasterd-ng:
+    name: MegaBasterd NG
+    icon: mega
+    category: Downloads
+  pyload:
+    name: pyLoad
+    icon: pyload
+    category: Downloads
+  bookmark:
+    name: Bookmarks
+    icon: linkding
+    category: Infrastructure
+  scrcpy:
+    name: scrcpy
+    icon: android
+    category: Infrastructure
+
+# Container names to drop unconditionally, even if listed above or discovered
+# with a port. The landing page itself is here: it is the page you are on.
+hide:
+  - lan-landing

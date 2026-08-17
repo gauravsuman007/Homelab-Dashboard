@@ -1,0 +1,189 @@
+# Build and publish the multi-arch image on every push.
+#
+# Four platforms are built into one manifest list, so `docker pull` picks the
+# right one automatically on a NAS, a Pi, an old 32-bit box, or a normal server.
+# Only amd64 runs natively on the runner; the rest go through QEMU, which is why
+# the layer cache matters -- an emulated PyYAML compile is the slow part.
+#
+# GHCR needs no secrets (GITHUB_TOKEN is enough). Docker Hub is published only
+# when DOCKERHUB_USERNAME/DOCKERHUB_TOKEN exist, so a fork or a clone without
+# those secrets still gets a working build instead of a red run.
+name: build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/servercontainerslandingpage
+  DOCKERHUB_IMAGE: ${{ github.repository_owner }}/servercontainerslandingpage
+  PLATFORMS: linux/amd64,linux/386,linux/arm/v7,linux/arm64
+
+jobs:
+  # Cheap gate: catch a syntax error or a bad import in seconds, before paying
+  # for four emulated image builds.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile all sources
+        run: python -m compileall -q app
+
+      - name: Import the app and exercise discovery without a docker socket
+        # The modules must import and the pure functions must work on a machine
+        # with no Docker at all -- that is what keeps discovery unit-testable.
+        run: |
+          cd app
+          python - <<'PY'
+          import discovery
+
+          # NPM config parsing, straight from a representative server block.
+          conf = {
+              "1.conf": '''
+                server {
+                  set $forward_scheme http;
+                  set $server         "192.168.2.100";
+                  set $port           8080;
+                  listen 443 ssl;
+                  server_name zvg.example.com zvg.example.de;
+                  ssl_certificate /etc/letsencrypt/live/npm-1/fullchain.pem;
+                }
+              ''',
+              "2.conf": '''
+                server {
+                  set $server "someapp";
+                  set $port 5800;
+                  server_name plain.example.com;
+                }
+              ''',
+          }
+          hosts = discovery.parse_proxy_hosts(conf)
+          assert len(hosts) == 3, hosts
+          assert {h.domain for h in hosts} == {
+              "zvg.example.com", "zvg.example.de", "plain.example.com"}
+          https = {h.domain: h.https for h in hosts}
+          assert https["zvg.example.com"] is True, "cert present means https"
+          assert https["plain.example.com"] is False, "no cert means http"
+
+          # Host-IP inference: two or more matching published ports means local,
+          # one is a coincidence and must be rejected.
+          ips = discovery.infer_host_ips(
+              proxy_hosts=[
+                  discovery.ProxyHost("a.example.com", "192.168.2.100", 8080, True),
+                  discovery.ProxyHost("b.example.com", "192.168.2.100", 7878, True),
+                  discovery.ProxyHost("c.example.com", "192.168.2.39", 5001, True),
+              ],
+              published_ports={8080, 7878, 5001},
+              gateways={"172.18.0.1"},
+              seen_hosts=set(),
+              configured=set(),
+          )
+          assert "192.168.2.100" in ips, ips
+          assert "192.168.2.39" not in ips, "single-port match is not this box"
+
+          # Tailscale CGNAT must be accepted even though modern Python does not
+          # count 100.64.0.0/10 as private.
+          assert discovery.acceptable_request_host("100.66.174.116")
+          assert discovery.acceptable_request_host("192.168.2.100")
+          assert not discovery.acceptable_request_host("8.8.8.8")
+          assert not discovery.acceptable_request_host("not-an-ip")
+
+          import server  # must import with no docker socket present
+          assert server.app is not None
+          print("checks passed")
+          PY
+
+      - name: Validate the shell script
+        run: bash -n nginx/apply.sh
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for Docker Hub credentials
+        id: hub
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DOCKERHUB_TOKEN not set -- publishing to GHCR only"
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.hub.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ steps.hub.outputs.enabled == 'true' && env.DOCKERHUB_IMAGE || '' }}
+          # latest tracks the default branch; branches and tags get their own.
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          # A pull request builds all four platforms but publishes nothing --
+          # the point there is to prove the build still works everywhere.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summarise
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo "Platforms: \`${{ env.PLATFORMS }}\`"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
