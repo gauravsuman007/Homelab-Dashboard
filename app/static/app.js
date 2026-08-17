@@ -185,6 +185,126 @@
     moveCard(dragged, zone.dataset.drop);
   });
 
+  /* Pointer-based dragging.
+   *
+   * HTML5 drag and drop does not exist on touch devices, so the grip handles
+   * use pointer events instead -- one code path for mouse, pen and touch. It is
+   * bound to the grips rather than the whole card so that a normal swipe still
+   * scrolls the page; the grip itself sets touch-action:none so a drag starting
+   * there does not scroll. Dragging a card's grip re-files it; dragging a
+   * category's grip reorders the sections. */
+
+  function makeGhost(source, event) {
+    var rect = source.getBoundingClientRect();
+    var ghost = source.cloneNode(true);
+    ghost.classList.add("ghost");
+    ghost.style.width = rect.width + "px";
+    ghost.style.left = rect.left + "px";
+    ghost.style.top = rect.top + "px";
+    ghost.dataset.dx = event.clientX - rect.left;
+    ghost.dataset.dy = event.clientY - rect.top;
+    document.body.appendChild(ghost);
+    return ghost;
+  }
+
+  function positionGhost(ghost, event) {
+    ghost.style.left = (event.clientX - Number(ghost.dataset.dx)) + "px";
+    ghost.style.top = (event.clientY - Number(ghost.dataset.dy)) + "px";
+  }
+
+  // Keep the pointer able to reach the edges of a long page while dragging.
+  function edgeScroll(y) {
+    if (y < 90) window.scrollBy(0, -14);
+    else if (y > window.innerHeight - 90) window.scrollBy(0, 14);
+  }
+
+  function beginPointerDrag(event, handle, spec) {
+    if (!editing || event.button > 0) return;
+    // Suppresses the native HTML5 drag and any text selection, so the two
+    // mechanisms can never both run for one gesture.
+    event.preventDefault();
+
+    var source = spec.source(handle);
+    var ghost = makeGhost(source, event);
+    source.classList.add("dragging");
+    handle.setPointerCapture(event.pointerId);
+
+    function move(e) {
+      positionGhost(ghost, e);
+      edgeScroll(e.clientY);
+      ghost.style.visibility = "hidden";          // look *through* the ghost
+      var under = document.elementFromPoint(e.clientX, e.clientY);
+      ghost.style.visibility = "";
+      spec.over(source, under, e);
+    }
+
+    function end(e) {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      ghost.remove();
+      source.classList.remove("dragging");
+      spec.drop(source, e);
+    }
+
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+
+  grid.addEventListener("pointerdown", function (e) {
+    var cardGrip = e.target.closest && e.target.closest(".card .grip");
+    if (cardGrip) {
+      beginPointerDrag(e, cardGrip, {
+        source: function (h) { return h.closest(".card"); },
+        over: function (source, under) {
+          document.querySelectorAll(".cards.over").forEach(function (z) {
+            z.classList.remove("over");
+          });
+          var zone = under && under.closest && under.closest(".cards");
+          if (zone) zone.classList.add("over");
+        },
+        drop: function (source, e) {
+          var under = document.elementFromPoint(e.clientX, e.clientY);
+          var zone = under && under.closest && under.closest(".cards");
+          document.querySelectorAll(".cards.over").forEach(function (z) {
+            z.classList.remove("over");
+          });
+          if (zone) moveCard(source, zone.dataset.drop);
+        }
+      });
+      return;
+    }
+
+    var catGrip = e.target.closest && e.target.closest(".cat-grip");
+    if (catGrip) {
+      beginPointerDrag(e, catGrip, {
+        source: function (h) { return h.closest(".cat"); },
+        // Sections are reordered live, so the page shows the outcome before the
+        // gesture ends. Uncategorized is skipped: it is pinned last.
+        over: function (source, under, e) {
+          var target = under && under.closest && under.closest(".cat");
+          if (!target || target === source || target.dataset.fixed) return;
+          var box = target.getBoundingClientRect();
+          var after = e.clientY > box.top + box.height / 2;
+          target.parentNode.insertBefore(source, after ? target.nextSibling : target);
+        },
+        drop: function () { saveCategoryOrder(); }
+      });
+    }
+  });
+
+  function saveCategoryOrder() {
+    var order = sections()
+      .filter(function (s) { return !s.dataset.fixed; })
+      .map(function (s) { return s.dataset.cat; });
+    post("/api/categories", { action: "reorder", order: order })
+      .catch(function (err) {
+        toast("Could not save order: " + err.message);
+        window.location.reload();
+      });
+  }
+
   function moveCard(card, category) {
     var from = card.closest(".cat").dataset.cat;
     if (from === category) return;

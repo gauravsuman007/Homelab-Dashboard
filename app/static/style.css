@@ -18,6 +18,9 @@
   --radius: 13px;
 }
 
+/* Dark is the default palette. The light one applies when the OS asks for it,
+   and again when ?theme=light pins it -- the two selectors cannot share a rule
+   because one is inside a media query, hence the repetition. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     --bg: #f4f6fb;
@@ -28,6 +31,16 @@
     --text: #161d2e;
     --muted: #5f6b85;
   }
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f6fb;
+  --bg-soft: #ffffff;
+  --card: #ffffff;
+  --card-hover: #eef2fb;
+  --line: #dde3f0;
+  --text: #161d2e;
+  --muted: #5f6b85;
 }
 
 * { box-sizing: border-box; }
@@ -382,6 +395,55 @@ body.editing .grip {
   background: var(--accent);
   border: 1px solid var(--accent);
 }
+
+/* Drag handles and the element that follows the pointer ------------------
+   touch-action:none on the grips is what lets a drag begin there without the
+   browser claiming the gesture as a scroll. It is scoped to the handles, so a
+   swipe anywhere else on the page still scrolls normally. */
+
+.cat-grip {
+  display: none;
+  margin-right: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: -1px;
+  cursor: grab;
+  touch-action: none;
+}
+body.editing .cat-grip { display: inline-block; }
+body.editing .grip { touch-action: none; cursor: grab; }
+.cat.dragging { opacity: 0.5; }
+
+.ghost {
+  position: fixed;
+  z-index: 60;
+  margin: 0;
+  pointer-events: none;
+  opacity: 0.9;
+  transform: rotate(1deg);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+
+/* Embedded view ---------------------------------------------------------
+   ?embed=1 strips the page furniture so the grid can sit inside someone else's
+   card -- a Home Assistant dashboard, typically -- without a second copy of the
+   view existing anywhere. */
+
+body.embed { padding: 10px 12px 14px; }
+body.embed .bar,
+body.embed footer,
+body.embed .hint { display: none; }
+body.embed .cat { margin-top: 14px; }
+body.embed .cat:first-child { margin-top: 0; }
+
+/* ?compact=1: the same cards without the address line or public-link chips,
+   for a small card where only the icon, name and status need to read. */
+body.compact .sub,
+body.compact .links { display: none; }
+body.compact .cards { grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 8px; }
+body.compact .hit { padding: 9px 10px; gap: 9px; }
+body.compact .icon { width: 30px; height: 30px; }
+body.compact .name { font-size: 13.5px; }
 
 .toast {
   position: fixed;

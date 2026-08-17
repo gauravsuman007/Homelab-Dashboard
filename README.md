@@ -224,7 +224,10 @@ same grid becomes editable in place.
 - **Change its icon** — a [dashboard-icons][icons] name, or paste an image URL.
   A URL is downloaded once, stored under a content-addressed name and served
   from disk, so the page never asks a browser to fetch from a third party.
-- **Reorganise** — drag a card into another category.
+- **Reorganise** — drag a card into another category, by its grip on touch
+  devices or from anywhere on the card with a mouse.
+- **Reorder categories** — drag a category by the grip beside its name.
+  Uncategorized stays pinned last and has no grip.
 - **Categories** — `+ Add category` creates one, the name is editable in place,
   and `✕` deletes it. Deleting moves its services to **Uncategorized**, which
   cannot be deleted or renamed, and has no delete button to click.
@@ -252,6 +255,68 @@ ever read. Mount `./config:/config:ro` to forbid UI edits at the filesystem
 level, or set `ALLOW_EDIT=false` to remove the edit button and reject the write
 endpoints — worth considering, since the page is unauthenticated and anyone who
 can open it can also rearrange it.
+
+## Home Assistant
+
+The leanest integration is an **iframe card pointing at this page** — no custom
+component, no JS resource, no second copy of the data. Because the card *is* the
+page, renames, icons, categories and reordering mirror instantly with nothing to
+sync.
+
+The page takes query parameters so an embedded view looks native rather than
+like a website in a box:
+
+| Parameter | Effect |
+| --- | --- |
+| `embed=1` | drops the header, hint and footer; tightens padding |
+| `compact=1` | denser tiles: no address line, no public-link chips |
+| `theme=dark` / `theme=light` | pin the palette (default: follow the OS) |
+| `category=Media,Downloads` | show only these categories |
+| `edit=1` | keep the edit button in an embedded view (off by default) |
+
+**As a dashboard card:**
+
+```yaml
+type: iframe
+url: http://192.168.2.100/?embed=1&compact=1
+aspect_ratio: 75%
+```
+
+**As a full-page sidebar entry** — Settings → Dashboards → Add dashboard →
+Webpage, or in `configuration.yaml`:
+
+```yaml
+panel_iframe:
+  homelab:
+    title: Homelab
+    icon: mdi:server-network
+    url: http://192.168.2.100/
+```
+
+The sidebar version keeps edit mode, so that's the one to use for rearranging.
+
+### Three things that decide whether this works
+
+1. **Mixed content.** An `http://` iframe inside an HTTPS Home Assistant is
+   blocked by the browser. If you reach HA over plain HTTP on the LAN — the
+   usual case, and the case here, since HA runs on this same box on port 8123 —
+   there is no problem. If HA is HTTPS, either give this page a TLS hostname
+   through your proxy or use the sidebar link instead of an embedded card.
+2. **The iframe loads from your browser, not from HA.** So the *viewing device*
+   must be allowed by the nginx ACL: on the LAN or the tailnet. Viewing HA
+   remotely through Nabu Casa will show an empty card unless the device is also
+   on the tailnet.
+3. **Theme.** Left alone the page follows the device's light/dark setting, which
+   usually matches HA. Pin it with `theme=` if you use a fixed HA theme.
+
+### If you want a native card instead
+
+A custom Lovelace card fetching `/api/apps` would inherit HA's theme exactly and
+avoid iframes altogether, at the cost of a JS resource to install, CORS headers
+to add here, and a second renderer to keep in step with this one. The API is
+public and stable if you want to build it — `/api/apps` returns every card with
+its name, icon, category, status and URLs — but it is emphatically not the lean
+option, and it is not included here.
 
 ## config/apps.yml is optional
 

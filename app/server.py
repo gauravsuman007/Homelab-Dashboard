@@ -262,6 +262,13 @@ def _refresh_loop() -> None:
     while True:
         try:
             _refresh()
+        except docker.errors.DockerException as exc:
+            # An unreachable daemon is a configuration problem, not a crash --
+            # usually a missing socket mount. One clear line beats a traceback.
+            message = "cannot reach the Docker socket; is /var/run/docker.sock mounted?"
+            log.error("%s (%s)", message, exc)
+            with _state_lock:
+                _state["error"] = message
         except Exception as exc:  # keep serving the last good snapshot
             log.exception("refresh failed")
             with _state_lock:
@@ -305,11 +312,35 @@ def _remember_host() -> None:
         log.info("learned local address %s from a request", host)
 
 
+def _flag(name: str) -> bool:
+    return request.args.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+
 @app.route("/")
 def index() -> str:
+    """The page.
+
+    Query parameters exist for embedding it in something else -- a Home
+    Assistant dashboard card, most obviously -- without needing a second
+    implementation of the view:
+
+        ?embed=1              drop the header, hint and footer; tighten padding
+        ?compact=1            denser cards: no URL line, no public-link chips
+        ?theme=dark|light     pin the palette instead of following the OS
+        ?category=Media,Apps  show only these categories
+        ?edit=1               keep the edit button in embed mode
+
+    Everything else about the page is identical, so an embedded view shows the
+    same names, icons and categories as the full one, with no second copy of the
+    data to keep in step.
+    """
     snap = _snapshot()
     host = _request_host()
     items = [a.as_dict(host) for a in snap["apps"]]
+
+    embed = _flag("embed")
+    theme = request.args.get("theme", "").lower()
+    wanted = [c.strip().casefold() for c in request.args.get("category", "").split(",") if c.strip()]
 
     # Every known category is rendered, empty ones included: they are drop
     # targets in edit mode. The template hides empty ones until editing starts,
@@ -318,12 +349,21 @@ def index() -> str:
     for item in items:
         grouped.setdefault(item["category"], []).append(item)
 
+    if wanted:
+        grouped = {c: v for c, v in grouped.items() if c.casefold() in wanted}
+        items = [i for i in items if i["category"].casefold() in wanted]
+
     return render_template(
         "index.html",
         title=SITE_TITLE,
         categories=grouped,
         uncategorized=store_module.UNCATEGORIZED,
-        allow_edit=ALLOW_EDIT,
+        # Editing is off by default in an embedded view: a dashboard card is a
+        # place to glance at, and a stray drag there would be a surprise.
+        allow_edit=ALLOW_EDIT and (not embed or _flag("edit")),
+        embed=embed,
+        compact=_flag("compact"),
+        theme=theme if theme in {"dark", "light"} else "",
         total=len(items),
         online=sum(1 for a in items if a["online"]),
         public=sum(1 for a in items if a["public_urls"]),
