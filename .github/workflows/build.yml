@@ -92,6 +92,36 @@ jobs:
           assert "192.168.2.100" in ips, ips
           assert "192.168.2.39" not in ips, "single-port match is not this box"
 
+          # Names and categories must derive from daemon metadata alone, since
+          # apps.yml is optional and most users will never write one.
+          def facts(**kw):
+              base = dict(name="c", image="", running=True, host_ports=[], internal_ports=[],
+                          aliases=set(), labels={}, host_network=False)
+              return discovery.ContainerFacts(**{**base, **kw})
+
+          # The image author's title wins...
+          assert discovery.display_name(facts(oci_title="Radarr", image="lscr.io/x/radarr:latest")) == "Radarr"
+          # ...unless it is really just a pull reference (hotio ships these).
+          assert discovery.display_name(
+              facts(oci_title="hotio/whisparr:v3", image="ghcr.io/hotio/whisparr:v3")) == "Whisparr"
+          # Image name beats a compose service named for its role in a stack.
+          assert discovery.display_name(
+              facts(name="wordpress_gaurav", image="wordpress:latest", compose_service="wp")) == "Wordpress"
+          # Existing capitalisation is never destroyed.
+          assert discovery.display_name(facts(oci_title="qBittorrent")) == "qBittorrent"
+
+          assert discovery.categorise(facts(name="radarr", image="lscr.io/x/radarr")) == "Automation"
+          assert discovery.categorise(facts(name="jellyfin", image="jellyfin/jellyfin")) == "Media"
+          assert discovery.categorise(facts(name="mystery", image="me/mystery")) == "Other"
+
+          # Two containers of one image must not produce two identical cards.
+          pair = [
+              discovery.App(key="decypharr_local", name="Decypharr", icon="x", category="Downloads", image="i", running=True),
+              discovery.App(key="decypharr_torbox", name="Decypharr", icon="x", category="Downloads", image="i", running=True),
+          ]
+          discovery._disambiguate(pair, set())
+          assert {a.name for a in pair} == {"Decypharr (Local)", "Decypharr (Torbox)"}, [a.name for a in pair]
+
           # Tailscale CGNAT must be accepted even though modern Python does not
           # count 100.64.0.0/10 as private.
           assert discovery.acceptable_request_host("100.66.174.116")

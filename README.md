@@ -30,7 +30,10 @@ uncomment `build: .` in `docker-compose.yml` and run `up -d --build`.
 | Where is its config? | Docker API archive endpoint (`docker cp`) | none |
 | Which addresses mean "this box"? | gateways + config inference + Host headers | none |
 | What URL do I link to? | the Host header of each request | none |
-| Pretty names, icons, categories | `config/apps.yml` | optional |
+| Which port is the web UI? | published ports, ranked; exposed ports for host-network containers | none |
+| What is this service called? | OCI title label → image name → compose service | none |
+| Which category? | built-in table of common self-hosted apps | none |
+| Which icon? | image name → the service's own favicon → letter tile | none |
 
 The two that are worth explaining:
 
@@ -209,11 +212,35 @@ All optional, set in `docker-compose.yml`:
 
 `apply.sh` honours `HOST_IP`, `APP_PORT`, `NPM_CONTAINER`, `EXTRA_ALLOW`.
 
-## Adding or relabelling a service
+## config/apps.yml is optional
 
-Edit `config/apps.yml` — re-read on every scan, no restart. See the comments at
-the top of that file. The one case that *requires* an entry is a container on the
-host network, which publishes nothing the Docker API can report: give it `port:`.
+Delete it and the page still works. Nothing has to be listed for it to appear:
+names, icons, categories and ports are all derived from the daemon.
+
+- **Name** — the image's `org.opencontainers.image.title` label, else the image
+  name, else the compose service name, else the container name. Titles that are
+  really pull references (`hotio/whisparr:v3`) are rejected, existing
+  capitalisation is preserved (`qBittorrent`), and duplicates disambiguate
+  themselves: two containers of one image become `Decypharr (Local)` and
+  `Decypharr (Torbox)` from their container names.
+- **Category** — a built-in table of the common self-hosted apps
+  (`CATEGORY_RULES` in `app/discovery.py`), not per-user config. Unmatched
+  services land in "Other".
+- **Port** — the published port, ranked to prefer one the reverse proxy already
+  fronts. A **host-network container** uses the port its image declares as
+  exposed, which is how Jellyfin's 8096 is found with nothing written down. The
+  reverse proxy itself links to its admin port rather than the port it proxies
+  for everything else.
+- **Icon** — image name → dashboard-icons, then the service's own favicon.
+- **This container hides itself** — no `hide:` entry needed.
+
+Measured on a 22-service box, the fully automatic result matched the hand-written
+one on every port and every category but one, and 21 of 23 icons resolved to the
+real product artwork. What was left was acronyms the deriver can't know
+(`WordPress`, `RDT Client`) and one personal grouping. That's what the shipped
+`config/apps.yml` now contains — corrections, not an inventory.
+
+Edits are re-read on every scan, so no restart is needed.
 
 ## CI
 

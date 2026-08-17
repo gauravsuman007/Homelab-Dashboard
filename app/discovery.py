@@ -59,8 +59,36 @@ INFRA_IMAGE_MARKERS = (
 
 # Reverse proxies we know how to read, most specific match first. `config_path`
 # is the directory *inside that container* holding the generated server blocks.
+# `admin_port` is the container port of its own UI: the edge publishes the ports
+# it proxies *for other services* (80/443), so without this its card would link
+# to the proxy itself rather than to its admin panel.
 EDGE_KINDS = (
-    {"marker": "nginx-proxy-manager", "kind": "npm", "config_path": "/data/nginx/proxy_host"},
+    {
+        "marker": "nginx-proxy-manager",
+        "kind": "npm",
+        "config_path": "/data/nginx/proxy_host",
+        "admin_port": 81,
+    },
+)
+
+# Category for a service, by the first pattern that matches its name, compose
+# service or image. Shipped in code rather than in config because it is the same
+# for everyone: these are the common self-hosted apps, not this user's choices.
+# Anything unmatched lands in "Other"; apps.yml overrides any of it.
+CATEGORY_RULES = (
+    (r"jellyfin|plex|emby|audiobookshelf|immich|navidrome|photoprism|stash|kavita"
+     r"|komga|calibre|airsonic|volumio|musicassistant|lms|jellyseerr|seerr|overseerr"
+     r"|ombi|jellystat", "Media"),
+    (r"radarr|sonarr|lidarr|readarr|whisparr|prowlarr|bazarr|jackett|flaresolverr"
+     r"|riven|buildarr|maintainerr|autobrr|recyclarr", "Automation"),
+    (r"qbittorrent|transmission|deluge|sabnzbd|nzbget|jdownloader|pyload|metube"
+     r"|aria2|rdt|decypharr|blackhole|torbox|audiobookbay|downloader|megabasterd"
+     r"|slskd|yt-dlp", "Downloads"),
+    (r"paperless|wordpress|bookstack|hedgedoc|nextcloud|projectsend|stirling"
+     r"|docuseal|wiki", "Documents"),
+    (r"portainer|nginx-proxy-manager|traefik|caddy|uptime|guacamole|homeassistant"
+     r"|home-assistant|watchtower|dozzle|grafana|prometheus|adguard|pihole"
+     r"|vaultwarden|bookmark|linkding|scrcpy|dockge|semaphore", "Infrastructure"),
 )
 
 
@@ -72,6 +100,7 @@ class Edge:
     kind: str
     config_path: str
     image: str
+    admin_port: int | None = None
 
 
 @dataclass
@@ -153,6 +182,7 @@ def find_edge(client: docker.DockerClient) -> Edge | None:
                     kind=kind["kind"],
                     config_path=kind["config_path"],
                     image=image,
+                    admin_port=kind.get("admin_port"),
                 )
     return None
 
@@ -346,6 +376,12 @@ class ContainerFacts:
     aliases: set[str]
     labels: dict[str, str]
     host_network: bool
+    # Metadata that makes a decent display name without anyone writing one:
+    # the image author's title, and the name the user gave the service in their
+    # compose file.
+    oci_title: str = ""
+    compose_service: str = ""
+    compose_project: str = ""
 
 
 def _container_facts(container) -> ContainerFacts:
@@ -384,6 +420,16 @@ def _container_facts(container) -> ContainerFacts:
     else:
         image = config.get("Image", "") or ""
 
+    labels = config.get("Labels") or {}
+    host_network = (attrs.get("HostConfig", {}) or {}).get("NetworkMode") == "host"
+
+    # A host-network container publishes nothing through the port bindings, but
+    # it is still bound on the host's interfaces -- so what the image declares as
+    # exposed *is* its host port. This is how Jellyfin's 8096 is found without
+    # anyone configuring it.
+    if host_network and not host_ports:
+        host_ports = set(internal_ports)
+
     return ContainerFacts(
         name=container.name,
         image=image,
@@ -391,8 +437,11 @@ def _container_facts(container) -> ContainerFacts:
         host_ports=sorted(host_ports),
         internal_ports=sorted(internal_ports),
         aliases=aliases,
-        labels=config.get("Labels") or {},
-        host_network=(attrs.get("HostConfig", {}) or {}).get("NetworkMode") == "host",
+        labels=labels,
+        host_network=host_network,
+        oci_title=labels.get("org.opencontainers.image.title", "") or "",
+        compose_service=labels.get("com.docker.compose.service", "") or "",
+        compose_project=labels.get("com.docker.compose.project", "") or "",
     )
 
 
@@ -452,6 +501,8 @@ def build_apps(
     proxy_hosts: list[ProxyHost],
     overrides: dict,
     host_ips: set[str],
+    edge: Edge | None = None,
+    self_name: str = "",
 ) -> list[App]:
     """Produce the list of cards to render.
 
@@ -461,6 +512,9 @@ def build_apps(
     Images on the infra denylist are hidden unless apps.yml mentions them
     explicitly, which is what keeps databases and sidecars off the page even
     when they do publish a port.
+
+    ``overrides`` is entirely optional: names, icons and categories all have a
+    derived default. It exists to correct a guess, not to enumerate services.
     """
     apps_cfg: dict = overrides.get("apps") or {}
     defaults: dict = overrides.get("defaults") or {}
@@ -469,6 +523,9 @@ def build_apps(
 
     apps: list[App] = []
     for facts in containers:
+        # This container is the page you are reading; listing it is noise.
+        if self_name and facts.name == self_name:
+            continue
         cfg = apps_cfg.get(facts.name)
         if cfg is None:
             # Allow matching on a prefix so compose-generated names such as
@@ -487,6 +544,10 @@ def build_apps(
             continue
 
         preferred = cfg.get("port")
+        # The reverse proxy publishes the ports it serves for *other* services,
+        # so ranking by port alone would link its card at the proxy itself.
+        if not preferred and edge and facts.name == edge.container_name and edge.admin_port:
+            preferred = edge.admin_port
         candidates = list(facts.host_ports)
         if preferred and preferred not in candidates:
             candidates.append(int(preferred))
@@ -500,9 +561,9 @@ def build_apps(
         apps.append(
             App(
                 key=facts.name,
-                name=cfg.get("name") or _prettify(facts.name),
+                name=cfg.get("name") or display_name(facts),
                 icon=cfg.get("icon") or _icon_slug(facts),
-                category=cfg.get("category") or defaults.get("category", "Other"),
+                category=cfg.get("category") or categorise(facts) or defaults.get("category", "Other"),
                 image=facts.image,
                 running=facts.running,
                 lan_port=chosen_port,
@@ -512,29 +573,121 @@ def build_apps(
             )
         )
 
+    _disambiguate(apps, {a.key for a in apps if apps_cfg.get(a.key, {}).get("name")})
     apps.sort(key=lambda a: (a.category.lower(), a.name.lower()))
     return apps
 
 
-def _prettify(name: str) -> str:
-    """Turn a container name into something readable.
+def _disambiguate(apps: list[App], pinned: set[str]) -> None:
+    """Make duplicate card names distinct, in place.
 
-    Compose names carry a project prefix and a numeric scale suffix
-    ("audiobookbay_downloader-jackett-1"); both are noise on a card, so the most
-    specific segment is kept.
+    Two containers of one image derive the same name -- two Decypharr instances,
+    two qBittorrents -- which leaves the page with cards nobody can tell apart.
+    The container names still differ, so the tokens unique to each become the
+    qualifier: decypharr_local and decypharr_torbox give "Decypharr (Local)" and
+    "Decypharr (TorBox)". A name set explicitly in apps.yml is never touched.
     """
-    cleaned = re.sub(r"-\d+$", "", name)
-    parts = re.split(r"[-_]", cleaned)
-    if len(parts) > 1:
-        parts = [parts[-1]] if len(parts[-1]) > 2 else parts
-    return " ".join(p.capitalize() for p in parts if p)
+    by_name: dict[str, list[App]] = defaultdict(list)
+    for item in apps:
+        by_name[item.name.lower()].append(item)
+
+    for group in by_name.values():
+        if len(group) < 2:
+            continue
+        token_sets = [set(re.split(r"[-_.\s]+", a.key.lower())) for a in group]
+        shared = set.intersection(*token_sets) if token_sets else set()
+        for item, tokens in zip(group, token_sets):
+            if item.key in pinned:
+                continue
+            unique = [t for t in re.split(r"[-_.\s]+", item.key) if t.lower() in tokens - shared]
+            if unique:
+                item.name = f"{item.name} ({' '.join(_titleise(u) for u in unique)})"
+
+
+def _titleise(value: str) -> str:
+    """Make a slug-ish string presentable without destroying real capitalisation.
+
+    A value that already carries capitals is the author's own styling and is kept
+    verbatim ("Paperless-ngx", "qBittorrent"); an all-lowercase one is split on
+    separators and capitalised.
+    """
+    if any(c.isupper() for c in value):
+        return value
+    return " ".join(part.capitalize() for part in re.split(r"[-_.\s]+", value) if part)
+
+
+def _usable_title(title: str) -> str | None:
+    """Whether an OCI title label is a product name or just an image reference.
+
+    Plenty of images set the label to their own pull reference -- hotio's
+    whisparr ships ``hotio/whisparr:v3`` -- which makes a poor card title. A "/"
+    or ":" is the giveaway, and a digest is never a name.
+    """
+    title = (title or "").strip()
+    if not title or title.startswith("sha256"):
+        return None
+    if "/" in title or ":" in title:
+        return None
+    return title
+
+
+def display_name(facts: ContainerFacts) -> str:
+    """The best available name for a service, without anyone writing one down.
+
+    In order: the image author's own title label, then the image's repository
+    name, then the compose service name, then the container name. Image name
+    before compose service because a service is often named for its role in a
+    stack rather than for the product ("wp", "scraper", "app"), while the image
+    repository is almost always the product itself.
+
+    The container name is last because compose decorates it with a project prefix
+    and a scale suffix, which is exactly the noise this is trying to avoid.
+    """
+    if _usable_title(facts.oci_title):
+        return _titleise(facts.oci_title)
+
+    image_name = _image_basename(facts.image)
+    if image_name and image_name not in {"latest", "app", "server", "main"}:
+        return _titleise(image_name)
+
+    if facts.compose_service:
+        return _titleise(facts.compose_service)
+
+    cleaned = re.sub(r"-\d+$", "", facts.name)
+    if facts.compose_project and cleaned.startswith(facts.compose_project):
+        cleaned = cleaned[len(facts.compose_project):].strip("-_") or cleaned
+    return _titleise(cleaned)
+
+
+def categorise(facts: ContainerFacts) -> str:
+    """Bucket a service using the built-in rules; "Other" when nothing matches."""
+    haystack = " ".join(
+        (facts.name, facts.compose_service, facts.image, facts.oci_title)
+    ).lower()
+    for pattern, category in CATEGORY_RULES:
+        if re.search(pattern, haystack):
+            return category
+    return "Other"
+
+
+def _image_basename(image: str) -> str:
+    """"lscr.io/linuxserver/radarr:latest" -> "radarr"."""
+    ref = image.split("@")[0]
+    if "/" in ref.rsplit(":", 1)[-1]:  # a port in the registry host, not a tag
+        pass
+    else:
+        ref = ref.rsplit(":", 1)[0]
+    return ref.rsplit("/", 1)[-1]
 
 
 def _icon_slug(facts: ContainerFacts) -> str:
-    """Best-effort icon slug from the image, e.g. lscr.io/linuxserver/radarr:latest -> radarr."""
-    ref = facts.image.split("@")[0]
-    ref = ref.rsplit(":", 1)[0] if "/" not in ref.rsplit(":", 1)[-1] else ref
-    slug = ref.rsplit("/", 1)[-1] or facts.name
+    """Icon slug for the icon set, e.g. lscr.io/linuxserver/radarr:latest -> radarr.
+
+    A slug the icon set does not have is not a failure: the server then asks the
+    service for its own favicon, so this only has to be right often enough to
+    prefer the nicer artwork.
+    """
+    slug = _image_basename(facts.image) or facts.compose_service or facts.name
     return re.sub(r"[^a-z0-9-]", "-", slug.lower()).strip("-")
 
 

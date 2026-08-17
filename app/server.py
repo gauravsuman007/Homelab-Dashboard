@@ -107,7 +107,20 @@ def _load_overrides() -> dict:
         return {}
 
 
-def _self_gateway(client: docker.DockerClient) -> str | None:
+def _self_container(client: docker.DockerClient):
+    """This container, found via the hostname docker sets to its own id.
+
+    Used to hide this service from its own listing and to locate the host
+    gateway. Returns None when that lookup fails -- running outside docker, or
+    with a hostname overridden -- and every caller degrades rather than fails.
+    """
+    try:
+        return client.containers.get(os.environ.get("HOSTNAME", ""))
+    except (docker.errors.NotFound, docker.errors.NullResource, docker.errors.APIError):
+        return None
+
+
+def _self_gateway(me) -> str | None:
     """The docker gateway for this container -- i.e. the host, from in here.
 
     Used as the probe target: published ports are bound on all host interfaces,
@@ -115,9 +128,7 @@ def _self_gateway(client: docker.DockerClient) -> str | None:
     without needing to know the box's LAN address. Host-network containers are
     also covered, since they too are bound on this interface.
     """
-    try:
-        me = client.containers.get(os.environ.get("HOSTNAME", ""))
-    except docker.errors.NotFound:
+    if me is None:
         return None
     networks = (me.attrs.get("NetworkSettings", {}) or {}).get("Networks") or {}
     for cfg in networks.values():
@@ -150,13 +161,16 @@ def _refresh() -> None:
             configured=HOST_IPS,
         )
 
+        me = _self_container(client)
         apps = discovery.build_apps(
             containers=containers,
             proxy_hosts=proxy_hosts,
             overrides=_load_overrides(),
             host_ips=host_ips,
+            edge=edge,
+            self_name=me.name if me else "",
         )
-        probe_target = _self_gateway(client) or "127.0.0.1"
+        probe_target = _self_gateway(me) or "127.0.0.1"
     finally:
         client.close()
 
