@@ -1,4 +1,6 @@
-# homelab-dashboard — LAN landing page
+# ServerContainersLandingPage
+
+[![build](https://github.com/gauravsuman007/ServerContainersLandingPage/actions/workflows/build.yml/badge.svg)](https://github.com/gauravsuman007/ServerContainersLandingPage/actions/workflows/build.yml)
 
 A single page at **http://\<your-server\>/** listing every service running on the
 box, with a link to each web UI and, where the reverse proxy in front of it has a
