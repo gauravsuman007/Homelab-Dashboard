@@ -35,7 +35,9 @@
       <article class="card{% if a.online is false %} down{% endif %}{% if not a.running %} stopped{% endif %}"
                data-key="{{ a.key }}" data-name="{{ a.name|lower }} {{ a.key|lower }} {{ a.image|lower }}">
         <a class="hit" href="{{ a.lan_url or a.public_urls[0] }}" target="_blank" rel="noreferrer">
-          <img class="icon" src="/icon/{{ a.icon }}" alt="" loading="lazy" width="40" height="40">
+          {# ?app= lets the server fall back to this service's own favicon when
+             the icon set has no match for the slug. #}
+          <img class="icon" src="/icon/{{ a.icon }}?app={{ a.key|urlencode }}" alt="" loading="lazy" width="40" height="40">
           <span class="meta">
             <span class="name">{{ a.name }}</span>
             <span class="sub">{{ a.lan_url.split('//')[1] if a.lan_url else a.public_urls[0].split('//')[1] }}</span>

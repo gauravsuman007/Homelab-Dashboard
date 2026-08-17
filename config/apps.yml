@@ -12,13 +12,12 @@
 #   name:      card title                (default: prettified container name)
 #   icon:      slug from dashboard-icons  (default: guessed from the image name)
 #              https://github.com/homarr-labs/dashboard-icons -- try the
-#              service's own name first; unknown slugs fall back to a letter
-#              tile, they do not break the card. Riven, Decypharr and
-#              AudiobookBay have no upstream icon as of Aug 2026 and are
-#              deliberately left on their letter tiles -- drop a file into
-#              cache/icons/<slug>.webp (or .svg) to supply one by hand; the
-#              cache is only ever refilled for slugs with no file, and a
-#              zero-byte file there is the "known missing" marker.
+#              service's own name first. A slug the icon set does not have is
+#              not a problem: the server then asks the service itself for its
+#              favicon, and only falls back to a letter tile if that fails too.
+#              To pin an icon by hand, drop a file into cache/icons/<slug>.png
+#              (.webp/.svg/.ico all work) -- a cached file is always preferred
+#              over both lookups.
 #   category:  section heading            (default: Other)
 #   port:      host port of the web UI    (default: chosen from published ports)
 #              REQUIRED for containers on the host network, which publish

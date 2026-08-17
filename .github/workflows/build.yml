@@ -18,8 +18,8 @@ on:
   workflow_dispatch:
 
 env:
-  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/servercontainerslandingpage
-  DOCKERHUB_IMAGE: ${{ github.repository_owner }}/servercontainerslandingpage
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/homelab-dashboard
+  DOCKERHUB_IMAGE: ${{ github.repository_owner }}/homelab-dashboard
   PLATFORMS: linux/amd64,linux/386,linux/arm/v7,linux/arm64
 
 jobs:
@@ -101,6 +101,26 @@ jobs:
 
           import server  # must import with no docker socket present
           assert server.app is not None
+
+          # Favicon fallback: apple-touch first (largest icon most apps ship),
+          # then declared icons, with /favicon.ico always tried last because
+          # plenty of services serve one without ever declaring it.
+          html = '''<html><head>
+            <link rel="shortcut icon" href="/static/fav.png">
+            <link rel="apple-touch-icon" sizes="180x180" href="assets/touch.png">
+            <link rel="stylesheet" href="/x.css">
+          </head></html>'''
+          assert server._favicon_candidates("http://host:8080", html) == [
+              "http://host:8080/assets/touch.png",
+              "http://host:8080/static/fav.png",
+              "http://host:8080/favicon.ico",
+          ]
+          # Missing or malformed markup must degrade, never raise.
+          assert server._favicon_candidates("http://h:1", "") == ["http://h:1/favicon.ico"]
+          assert server._favicon_candidates("http://h:1", "<link rel=icon>") == ["http://h:1/favicon.ico"]
+          for _magic, suffix in server._IMAGE_MAGIC:
+              assert suffix in server._MIME_BY_SUFFIX, suffix
+
           print("checks passed")
           PY
 

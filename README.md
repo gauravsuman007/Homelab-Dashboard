@@ -1,6 +1,6 @@
-# ServerContainersLandingPage
+# Homelab Dashboard
 
-[![build](https://github.com/gauravsuman007/ServerContainersLandingPage/actions/workflows/build.yml/badge.svg)](https://github.com/gauravsuman007/ServerContainersLandingPage/actions/workflows/build.yml)
+[![build](https://github.com/gauravsuman007/Homelab-Dashboard/actions/workflows/build.yml/badge.svg)](https://github.com/gauravsuman007/Homelab-Dashboard/actions/workflows/build.yml)
 
 A single page at **http://\<your-server\>/** listing every service running on the
 box, with a link to each web UI and, where the reverse proxy in front of it has a
@@ -15,7 +15,7 @@ docker compose up -d     # pull and start
 ```
 
 Prebuilt multi-arch images are published on every push to
-`ghcr.io/gauravsuman007/servercontainerslandingpage` for **linux/amd64,
+`ghcr.io/gauravsuman007/homelab-dashboard` for **linux/amd64,
 linux/386, linux/arm/v7 and linux/arm64** — the same compose file works on a
 server, a NAS, or a Raspberry Pi. Update with
 `docker compose pull && docker compose up -d`. To build your own instead,
@@ -81,9 +81,32 @@ Status dots are a **TCP connect** to the host gateway, not an HTTP request:
 several services answer 401/302 at `/`, so a status-code rule would show healthy
 services as down.
 
-Icons come from [dashboard-icons][icons], fetched once and cached in `./cache/`,
-then served from `/icon/<slug>`. The browser makes **no third-party requests** —
-the page works with the LAN alone. Unknown slugs fall back to a letter tile.
+Icons resolve in three tiers, all served from `/icon/<slug>` and cached in
+`./cache/`:
+
+1. **[dashboard-icons][icons]** — preferred, because they're consistent, square
+   and already sized for tiles.
+2. **the service's own favicon** — for anything the icon set doesn't cover. The
+   server fetches the app's page, reads its `<link rel="icon">` tags (preferring
+   `apple-touch-icon`, the largest thing most apps ship) and falls back to
+   `/favicon.ico`, which plenty of services serve without declaring it — and
+   often without requiring a login. Disable with `FAVICON_FALLBACK=false`.
+3. **a letter tile** — the service's initial, when neither source has anything.
+
+Fetching happens server-side, so the browser still makes **no third-party
+requests** and the page works with the LAN alone. It also means favicons resolve
+for services the visitor's own browser couldn't reach.
+
+A "nothing found" result is cached for `ICON_MISS_TTL_HOURS` (24 by default)
+rather than forever, so an icon isn't lost permanently just because the service
+happened to be down or still starting when it was first looked up. Delete the
+`.miss` file in `cache/icons/` to retry immediately, or drop your own
+`cache/icons/<slug>.png` in to override any of this.
+
+TLS verification is off for the favicon probe: these are LAN services,
+overwhelmingly self-signed, and the payload is a decorative image whose bytes are
+validated as an image (by content type or magic number) and capped at 512 KB
+before use.
 
 [icons]: https://github.com/homarr-labs/dashboard-icons
 
@@ -181,6 +204,8 @@ All optional, set in `docker-compose.yml`:
 | `INCLUDE_STOPPED` | `false` | also list stopped containers, greyed out |
 | `HOST_IPS` | inferred | override for "which addresses are this box" |
 | `EDGE_CONFIG_DIR` | unset | read proxy config from a mount instead of the API |
+| `FAVICON_FALLBACK` | `true` | ask services for their own favicon when the icon set misses |
+| `ICON_MISS_TTL_HOURS` | `24` | how long a "no icon found" result is remembered |
 
 `apply.sh` honours `HOST_IP`, `APP_PORT`, `NPM_CONTAINER`, `EXTRA_ALLOW`.
 

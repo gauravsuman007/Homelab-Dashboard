@@ -7,7 +7,7 @@ services:
     # Multi-arch image (amd64, 386, arm/v7, arm64) published by CI on every push,
     # so this same file works on a server, a NAS, or a Pi. Update with
     # `docker compose pull && docker compose up -d`.
-    image: ghcr.io/gauravsuman007/servercontainerslandingpage:latest
+    image: ghcr.io/gauravsuman007/homelab-dashboard:latest
     # To run your own build instead, uncomment this and use `up -d --build`.
     # build: .
     container_name: lan-landing

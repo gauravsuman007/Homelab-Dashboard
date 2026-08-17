@@ -33,6 +33,7 @@ from pathlib import Path
 
 import docker
 import requests
+import urllib3
 import yaml
 from flask import Flask, Response, jsonify, render_template, request
 
@@ -62,6 +63,13 @@ ICON_SOURCES = (
     "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/webp/{slug}.webp",
     "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/{slug}.svg",
 )
+# When the icon set has no match, ask the service itself for its favicon.
+FAVICON_FALLBACK = os.environ.get("FAVICON_FALLBACK", "true").lower() in {"1", "true", "yes"}
+# How long a "no icon anywhere" result is remembered. Bounded rather than
+# permanent because a favicon lookup can fail for temporary reasons -- the
+# service was still starting, or briefly down -- and should be retried later.
+ICON_MISS_TTL = float(os.environ.get("ICON_MISS_TTL_HOURS", "24")) * 3600
+FAVICON_MAX_BYTES = 512 * 1024
 
 app = Flask(__name__)
 
@@ -72,6 +80,9 @@ _state: dict = {
     "error": None,
     "edge": None,
     "host_ips": [],
+    # Address of the host as seen from this container; where services are
+    # probed, and where their favicons are fetched from.
+    "probe_target": None,
 }
 
 # Addresses visitors have reached this page by. Each one is, by definition, an
@@ -175,6 +186,7 @@ def _refresh() -> None:
             if edge else None
         )
         _state["host_ips"] = sorted(host_ips)
+        _state["probe_target"] = probe_target
 
 
 def _refresh_loop() -> None:
@@ -269,45 +281,220 @@ def healthz():
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
+_MIME_BY_SUFFIX = {
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+}
+_SUFFIX_BY_MIME = {
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
+    "image/png": ".png",
+    "image/x-icon": ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+}
+# Magic numbers, for servers that hand back a favicon as octet-stream.
+_IMAGE_MAGIC = (
+    (b"\x00\x00\x01\x00", ".ico"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"GIF8", ".gif"),
+    (b"RIFF", ".webp"),
+    (b"\xff\xd8\xff", ".jpg"),
+)
+_MISS_SUFFIX = ".miss"
+
+
+def _cached_icon(slug: str) -> tuple[bytes, str] | str | None:
+    """Look up ``slug`` in the cache.
+
+    Returns the bytes and mime type on a hit, the string ``"miss"`` when a
+    still-valid negative marker exists, or None when nothing is cached and the
+    upstream sources should be tried.
+    """
+    for path in sorted(ICON_CACHE_DIR.glob(f"{slug}.*")):
+        # A zero-byte file is a negative marker: the old format wrote it with an
+        # image suffix, the current one uses .miss. Both are honoured, and both
+        # expire so a transient failure is not remembered forever.
+        if path.suffix == _MISS_SUFFIX or path.stat().st_size == 0:
+            if time.time() - path.stat().st_mtime < ICON_MISS_TTL:
+                return "miss"
+            path.unlink(missing_ok=True)
+            continue
+        mime = _MIME_BY_SUFFIX.get(path.suffix)
+        if mime:
+            return path.read_bytes(), mime
+    return None
+
+
+def _fetch_from_icon_set(slug: str) -> tuple[bytes, str] | None:
+    """Try the dashboard-icons set, which is the preferred source."""
+    for template in ICON_SOURCES:
+        url = template.format(slug=slug)
+        try:
+            resp = requests.get(url, timeout=6)
+        except requests.RequestException as exc:
+            log.debug("icon set fetch failed for %s: %s", slug, exc)
+            continue
+        if resp.status_code == 200 and resp.content:
+            return resp.content, ("image/svg+xml" if url.endswith(".svg") else "image/webp")
+    return None
+
+
+_RE_ICON_LINK = re.compile(
+    r"""<link\b[^>]*\brel\s*=\s*["']?([^"'>]*icon[^"'>]*)["']?[^>]*>""",
+    re.I,
+)
+_RE_HREF = re.compile(r"""\bhref\s*=\s*["']([^"']+)["']""", re.I)
+
+
+def _favicon_candidates(base: str, html: str) -> list[str]:
+    """URLs worth trying for a service's own icon, best first.
+
+    Parsed with a regex rather than an HTML library to avoid a dependency for
+    one tag. Precision is not important here: a wrong candidate simply fails the
+    image check and the next one is tried. apple-touch-icons come first because
+    they are the largest and squarest thing most apps ship, which suits a tile.
+    """
+    from urllib.parse import urljoin
+
+    touch, regular = [], []
+    for match in _RE_ICON_LINK.finditer(html or ""):
+        tag = match.group(0)
+        rel = match.group(1).lower()
+        href = _RE_HREF.search(tag)
+        if not href:
+            continue
+        url = urljoin(base + "/", href.group(1).strip())
+        (touch if "apple-touch" in rel else regular).append(url)
+
+    # /favicon.ico last but always tried: plenty of services ship one without
+    # ever declaring it, and it is often reachable even when / needs a login.
+    return [*touch, *regular, urljoin(base + "/", "/favicon.ico")]
+
+
+def _fetch_favicon(scheme: str, host: str, port: int) -> tuple[bytes, str] | None:
+    """Ask the service itself for its icon.
+
+    Fetched server-side from the host address this container can reach, so it
+    works for services the visitor's browser could not query directly, and the
+    result is cached like any other icon -- the page still makes no third-party
+    requests.
+
+    TLS verification is off on purpose: these are LAN services, overwhelmingly
+    with self-signed certificates, and the payload is a decorative image whose
+    bytes are validated as an image before use.
+    """
+    base = f"{scheme}://{host}:{port}"
+    session = requests.Session()
+    session.verify = False
+    session.headers["User-Agent"] = "homelab-dashboard/1.0 (favicon probe)"
+    # Suppressed for this session only: verify=False is intentional above, and
+    # the warning would otherwise repeat for every https service on every miss.
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    html = ""
+    try:
+        landing = session.get(base + "/", timeout=4, allow_redirects=True)
+        if "html" in landing.headers.get("Content-Type", "").lower():
+            html = landing.text[:200_000]
+    except requests.RequestException as exc:
+        log.debug("favicon: cannot read %s: %s", base, exc)
+
+    for url in _favicon_candidates(base, html):
+        try:
+            # Streamed with a hard byte cap so a service that answers /favicon.ico
+            # with a video file, or an endless stream, cannot fill the cache.
+            with session.get(url, timeout=4, allow_redirects=True, stream=True) as resp:
+                if resp.status_code != 200:
+                    continue
+                data = resp.raw.read(FAVICON_MAX_BYTES + 1, decode_content=True) or b""
+                content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        except requests.RequestException:
+            continue
+
+        if not data or len(data) > FAVICON_MAX_BYTES:
+            continue
+
+        suffix = _SUFFIX_BY_MIME.get(content_type)
+        if suffix is None:
+            # Content-Type was wrong or generic: identify by magic instead, and
+            # accept SVG only when it really opens like markup.
+            for magic, guessed in _IMAGE_MAGIC:
+                if data.startswith(magic):
+                    suffix = guessed
+                    break
+            else:
+                head = data[:200].lstrip().lower()
+                if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in data[:500].lower()):
+                    suffix = ".svg"
+        if suffix is None:
+            continue
+
+        log.info("favicon: using %s for %s", url, base)
+        return data, _MIME_BY_SUFFIX[suffix]
+    return None
+
+
+def _service_endpoint(app_key: str) -> tuple[str, str, int] | None:
+    """Where to fetch ``app_key``'s favicon from: (scheme, host, port)."""
+    snap = _snapshot()
+    host = snap.get("probe_target")
+    if not host:
+        return None
+    for item in snap["apps"]:
+        if item.key == app_key and item.lan_port:
+            return item.scheme, host, item.lan_port
+    return None
+
 
 @app.route("/icon/<slug>")
 def icon(slug: str) -> Response:
-    """Serve a cached service icon, or a generated tile when there is none.
+    """Serve a service icon: the icon set, then the service's own favicon, then a tile.
 
     ``slug`` is validated against a strict pattern before being used as a
-    filename or interpolated into the upstream URL -- it comes from image names
-    and a hand-edited YAML file, so it is not trusted as a path.
+    filename or interpolated into an upstream URL -- it comes from image names
+    and a hand-edited YAML file, so it is not trusted as a path. The optional
+    ``?app=`` parameter names the container to ask for a favicon, and is only
+    ever compared against the known app list, never used to build a path.
     """
     if not _SLUG_RE.match(slug) or ".." in slug:
         return _letter_tile("?")
 
     ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    for suffix, mime in ((".webp", "image/webp"), (".svg", "image/svg+xml")):
-        cached = ICON_CACHE_DIR / f"{slug}{suffix}"
-        if cached.is_file():
-            if cached.stat().st_size == 0:  # negative cache: known-missing icon
-                return _letter_tile(slug[0])
-            return Response(cached.read_bytes(), mimetype=mime,
-                            headers={"Cache-Control": "public, max-age=604800"})
+    cached = _cached_icon(slug)
+    if cached == "miss":
+        return _letter_tile(slug[0])
+    if isinstance(cached, tuple):
+        return _serve_icon(*cached)
 
-    for template in ICON_SOURCES:
-        url = template.format(slug=slug)
-        suffix = ".svg" if url.endswith(".svg") else ".webp"
-        try:
-            resp = requests.get(url, timeout=6)
-        except requests.RequestException as exc:
-            log.debug("icon fetch failed for %s: %s", slug, exc)
-            continue
-        if resp.status_code == 200 and resp.content:
-            (ICON_CACHE_DIR / f"{slug}{suffix}").write_bytes(resp.content)
-            mime = "image/svg+xml" if suffix == ".svg" else "image/webp"
-            return Response(resp.content, mimetype=mime,
-                            headers={"Cache-Control": "public, max-age=604800"})
+    found = _fetch_from_icon_set(slug)
 
-    # Record the miss so a name with no upstream icon is not refetched on every
-    # page load; delete the empty file to retry.
-    (ICON_CACHE_DIR / f"{slug}.webp").write_bytes(b"")
+    if not found and FAVICON_FALLBACK:
+        endpoint = _service_endpoint(request.args.get("app", ""))
+        if endpoint:
+            found = _fetch_favicon(*endpoint)
+
+    if found:
+        data, mime = found
+        suffix = _SUFFIX_BY_MIME.get(mime, ".webp")
+        (ICON_CACHE_DIR / f"{slug}{suffix}").write_bytes(data)
+        return _serve_icon(data, mime)
+
+    # Remember the miss so a name with no icon anywhere is not looked up on every
+    # page load. The marker expires (ICON_MISS_TTL); delete it to retry sooner.
+    (ICON_CACHE_DIR / f"{slug}{_MISS_SUFFIX}").write_bytes(b"")
     return _letter_tile(slug[0])
+
+
+def _serve_icon(data: bytes, mime: str) -> Response:
+    return Response(data, mimetype=mime,
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 
 def _letter_tile(letter: str) -> Response:
