@@ -193,7 +193,7 @@ body {
 
 /* Footer ---------------------------------------------------------------- */
 
-.empty { color: var(--muted); margin-top: 30px; }
+.empty-note { color: var(--muted); margin-top: 30px; }
 
 footer {
   margin-top: 34px;
@@ -204,8 +204,204 @@ footer {
 }
 footer a { color: var(--muted); }
 
+/* Edit mode -------------------------------------------------------------
+   Toggled by a class on <body>, so entering and leaving needs no request and
+   no re-render. Everything below is inert until that class is present. */
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  color: var(--muted);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.icon-btn:hover { color: var(--text); border-color: var(--accent); }
+.icon-btn[aria-pressed="true"] {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.icon-btn.tiny { padding: 0 6px; font-size: 12px; line-height: 1.6; }
+
+.hint {
+  margin: 0 0 6px;
+  padding: 9px 13px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-soft));
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* An empty category is noise on the normal page but essential while editing --
+   it is where a first card gets dropped. */
+.cat.empty { display: none; }
+body.editing .cat.empty { display: block; }
+body.editing .cat.empty .cards {
+  min-height: 62px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+}
+
+.cat-del, .grip { display: none; }
+body.editing .cat-del { display: inline-block; }
+body.editing .cat-del:hover { color: var(--down); border-color: var(--down); }
+
+body.editing .cat-name {
+  padding: 1px 6px;
+  margin: -1px -6px;
+  border-radius: 6px;
+  outline: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  cursor: text;
+}
+body.editing .cat-name:focus {
+  outline: 2px solid var(--accent);
+  color: var(--text);
+  background: var(--bg-soft);
+}
+
+body.editing .card { cursor: grab; }
+body.editing .card:active { cursor: grabbing; }
+body.editing .hit { pointer-events: none; }   /* a click edits, it does not open */
+body.editing .grip {
+  display: block;
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: -1px;
+}
+.card { position: relative; }
+.card.dragging { opacity: 0.45; }
+
+.cards.over {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
+}
+
+.add-cat {
+  margin-top: 18px;
+  padding: 9px 14px;
+  color: var(--accent);
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--accent) 50%, var(--line));
+  border-radius: 9px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.add-cat:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/* Editor dialog --------------------------------------------------------- */
+
+#editor {
+  width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+#editor::backdrop { background: rgba(4, 7, 16, 0.62); }
+#editor form { padding: 18px; }
+#editor h3 { margin: 0 0 2px; font-size: 15px; }
+.editor-key {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+#editor label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#editor input, #editor select {
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+}
+#editor input:focus, #editor select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#editor select { margin-bottom: 4px; }
+.field-note { margin: 5px 0 14px; color: var(--muted); font-size: 11.5px; }
+.field-note a { color: var(--accent); }
+.icon-row { display: flex; align-items: center; gap: 10px; }
+.icon-row .icon { flex: 0 0 auto; border: 1px solid var(--line); }
+#f-icon-url { margin-top: 7px; }
+
+.editor-error {
+  margin: 12px 0 0;
+  padding: 8px 11px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--down) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--down) 45%, transparent);
+  font-size: 12.5px;
+}
+
+#editor menu {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+}
+#editor menu .spacer { flex: 1; }
+#editor button {
+  padding: 8px 13px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+#editor .ghost {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+}
+#editor .ghost:hover { color: var(--text); border-color: var(--accent); }
+#editor .primary {
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: min(460px, calc(100vw - 32px));
+  padding: 10px 15px;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid color-mix(in srgb, var(--down) 50%, var(--line));
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+}
+
 @media (max-width: 520px) {
   .cards { grid-template-columns: 1fr; }
-  #filter { margin-left: 0; flex-basis: 100%; }
+  #filter { margin-left: 0; flex-basis: 100%; order: 3; }
   .links { padding-left: 13px; }
+  .icon-btn .label { display: none; }
 }

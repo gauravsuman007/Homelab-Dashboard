@@ -8,7 +8,7 @@
 <link rel="icon" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body data-uncategorized="{{ uncategorized }}"{% if allow_edit %} data-can-edit="1"{% endif %}>
 <header class="bar">
   <div class="brand">
     <span class="dot-logo"></span>
@@ -20,23 +20,44 @@
     <span><strong>{{ public }}</strong> public</span>
   </div>
   <input id="filter" type="search" placeholder="Filter…" autocomplete="off" spellcheck="false" aria-label="Filter services">
+  {% if allow_edit %}
+  <button id="edit-toggle" type="button" class="icon-btn" aria-pressed="false" title="Edit layout">
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+      <path d="M13.6 2.9a1.7 1.7 0 0 1 2.4 0l1.1 1.1a1.7 1.7 0 0 1 0 2.4l-8.5 8.5-3.8.9.9-3.8 8.5-8.5z"
+            fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    </svg>
+    <span class="label">Edit</span>
+  </button>
+  {% endif %}
 </header>
 
 {% if error %}
 <p class="banner">Discovery error — showing the last known state. {{ error }}</p>
 {% endif %}
 
+<p id="edit-hint" class="hint" hidden>
+  Drag a card to move it between categories. Click a card to rename it or change its icon.
+  Category names are editable; ✕ removes a category and moves its services to {{ uncategorized }}.
+</p>
+
 <main id="grid">
 {% for category, items in categories.items() %}
-  <section class="cat" data-cat="{{ category }}">
-    <h2>{{ category }} <span class="count">{{ items|length }}</span></h2>
-    <div class="cards">
+  <section class="cat{% if not items %} empty{% endif %}" data-cat="{{ category }}"
+           {% if category == uncategorized %}data-fixed="1"{% endif %}>
+    <h2>
+      <span class="cat-name" data-value="{{ category }}">{{ category }}</span>
+      <span class="count">{{ items|length }}</span>
+      {% if category != uncategorized %}
+      <button type="button" class="cat-del icon-btn tiny" title="Delete category" aria-label="Delete category {{ category }}">✕</button>
+      {% endif %}
+    </h2>
+    <div class="cards" data-drop="{{ category }}">
     {% for a in items %}
       <article class="card{% if a.online is false %} down{% endif %}{% if not a.running %} stopped{% endif %}"
                data-key="{{ a.key }}" data-name="{{ a.name|lower }} {{ a.key|lower }} {{ a.image|lower }}">
+        {# ?app= lets the server fall back to this service's own favicon when
+           the icon set has no match for the slug. #}
         <a class="hit" href="{{ a.lan_url or a.public_urls[0] }}" target="_blank" rel="noreferrer">
-          {# ?app= lets the server fall back to this service's own favicon when
-             the icon set has no match for the slug. #}
           <img class="icon" src="/icon/{{ a.icon }}?app={{ a.key|urlencode }}" alt="" loading="lazy" width="40" height="40">
           <span class="meta">
             <span class="name">{{ a.name }}</span>
@@ -54,6 +75,7 @@
           {% endfor %}
         </div>
         {% endif %}
+        <span class="grip" aria-hidden="true" title="Drag to another category">⠿</span>
       </article>
     {% endfor %}
     </div>
@@ -61,13 +83,54 @@
 {% endfor %}
 </main>
 
+{% if allow_edit %}
+<button type="button" id="cat-add" class="add-cat" hidden>+ Add category</button>
+{% endif %}
+
 {% if total == 0 %}
-<p class="empty">No services discovered yet — the first scan takes a few seconds. This page refreshes itself.</p>
+<p class="empty-note">No services discovered yet — the first scan takes a few seconds. This page refreshes itself.</p>
 {% endif %}
 
 <footer>
   <span id="updated"></span> · <a href="/api/apps">JSON</a>
 </footer>
+
+{# Card editor. Kept in the page rather than built in JS so it is styled and
+   translated in one place, and so it works before any script has run. #}
+<dialog id="editor">
+  <form method="dialog" id="editor-form">
+    <h3>Edit service</h3>
+    <p class="editor-key" id="editor-key"></p>
+
+    <label for="f-name">Display name</label>
+    <input id="f-name" name="name" type="text" maxlength="60" autocomplete="off">
+    <p class="field-note">Leave empty to use the detected name (<span id="d-name"></span>).</p>
+
+    <label for="f-icon">Icon</label>
+    <div class="icon-row">
+      <img id="icon-preview" class="icon" width="40" height="40" alt="">
+      <input id="f-icon" name="icon" type="text" autocomplete="off"
+             placeholder="dashboard-icons name, e.g. plex">
+    </div>
+    <p class="field-note">
+      A name from <a href="https://dashboardicons.com" target="_blank" rel="noreferrer">dashboard-icons</a>,
+      or paste an image URL below. Empty falls back to the detected icon, then the service's own favicon.
+    </p>
+    <input id="f-icon-url" type="url" placeholder="…or an image URL to download and keep" autocomplete="off">
+
+    <label for="f-cat">Category</label>
+    <select id="f-cat" name="category"></select>
+
+    <p class="editor-error" id="editor-error" hidden></p>
+
+    <menu>
+      <button type="button" id="editor-reset" class="ghost">Reset to automatic</button>
+      <span class="spacer"></span>
+      <button type="button" id="editor-cancel" class="ghost">Cancel</button>
+      <button type="button" id="editor-save" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
 
 <script src="/static/app.js"></script>
 </body>

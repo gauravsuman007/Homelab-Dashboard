@@ -208,9 +208,50 @@ All optional, set in `docker-compose.yml`:
 | `HOST_IPS` | inferred | override for "which addresses are this box" |
 | `EDGE_CONFIG_DIR` | unset | read proxy config from a mount instead of the API |
 | `FAVICON_FALLBACK` | `true` | ask services for their own favicon when the icon set misses |
+| `ALLOW_EDIT` | `true` | enable edit mode and the endpoints that write to it |
+| `CUSTOMISATIONS_PATH` | `/config/customisations.json` | where edit-mode changes are stored |
 | `ICON_MISS_TTL_HOURS` | `24` | how long a "no icon found" result is remembered |
 
 `apply.sh` honours `HOST_IP`, `APP_PORT`, `NPM_CONTAINER`, `EXTRA_ALLOW`.
+
+## Editing from the page
+
+The pencil in the header turns on edit mode. Nothing is a separate screen — the
+same grid becomes editable in place.
+
+- **Rename a service** — click a card for a small editor. The name sticks to the
+  container permanently, surviving restarts, recreates and image updates.
+- **Change its icon** — a [dashboard-icons][icons] name, or paste an image URL.
+  A URL is downloaded once, stored under a content-addressed name and served
+  from disk, so the page never asks a browser to fetch from a third party.
+- **Reorganise** — drag a card into another category.
+- **Categories** — `+ Add category` creates one, the name is editable in place,
+  and `✕` deletes it. Deleting moves its services to **Uncategorized**, which
+  cannot be deleted or renamed, and has no delete button to click.
+- **Reset to automatic** — drops the override and returns the card to its
+  derived name, icon and category.
+
+Renaming or deleting a category also moves services that were only there by
+*derivation*, not just ones filed by hand: each gets an explicit assignment, so
+nothing springs back to its derived category on the next scan.
+
+Everything is written server-side before the UI accepts it, and the response
+carries the saved values back — a failed edit is reverted on screen with the
+reason, so the page never shows state the server did not store. Polling and
+auto-reload pause while editing so a scan cannot move something mid-drag.
+
+Changes live in `config/customisations.json`, next to `apps.yml` but written by
+the app: JSON because round-tripping YAML would destroy the comments that make
+`apps.yml` worth hand-editing. Writes are atomic, and the file is left
+world-readable so you can inspect or version it. Precedence is:
+
+    UI customisation  >  apps.yml  >  value derived from the Docker daemon
+
+**This is why `./config` is now mounted read-write.** `apps.yml` is still only
+ever read. Mount `./config:/config:ro` to forbid UI edits at the filesystem
+level, or set `ALLOW_EDIT=false` to remove the edit button and reject the write
+endpoints — worth considering, since the page is unauthenticated and anyone who
+can open it can also rearrange it.
 
 ## config/apps.yml is optional
 
@@ -267,10 +308,12 @@ the finished virtualenv.
 .github/workflows/build.yml     checks, then the 4-platform image build
 docker-compose.yml              service definition (portable as written)
 Dockerfile                      python:3.12-slim + flask/gunicorn/docker/pyyaml
-config/apps.yml                 display overrides (live-reloaded)
+config/apps.yml                 hand-written overrides (live-reloaded, optional)
+config/customisations.json      written by edit mode (created on first edit)
 cache/                          downloaded icons (created on first run)
 app/server.py                   HTTP surface, refresh loop, icon cache
 app/discovery.py                docker + proxy parsing, host-IP inference
+app/store.py                    customisation store: atomic writes, category rules
 app/templates/index.html
 app/static/{style.css,app.js,favicon.svg}
 nginx/lan-landing.conf.template source for the server block

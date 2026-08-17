@@ -24,6 +24,7 @@ Endpoints
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ import yaml
 from flask import Flask, Response, jsonify, render_template, request
 
 import discovery
+import store as store_module
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -53,6 +55,13 @@ HOST_IPS = {ip.strip() for ip in os.environ.get("HOST_IPS", "").split(",") if ip
 # socket is behind a proxy that blocks the archive endpoint.
 CONFIG_DIR = os.environ.get("EDGE_CONFIG_DIR", "")
 OVERRIDES_PATH = os.environ.get("OVERRIDES_PATH", "/config/apps.yml")
+# Where edit-mode changes are written. Lives beside apps.yml, but written by the
+# app rather than by hand -- so ./config must be mounted read-write for the UI's
+# editing features to work.
+CUSTOMISATIONS_PATH = os.environ.get("CUSTOMISATIONS_PATH", "/config/customisations.json")
+# The page is unauthenticated, so anyone who can load it can also edit it. Set
+# false to serve a read-only dashboard.
+ALLOW_EDIT = os.environ.get("ALLOW_EDIT", "true").lower() in {"1", "true", "yes"}
 ICON_CACHE_DIR = Path(os.environ.get("ICON_CACHE_DIR", "/cache/icons"))
 REFRESH_SECONDS = float(os.environ.get("REFRESH_SECONDS", "30"))
 PROBE_TIMEOUT = float(os.environ.get("PROBE_TIMEOUT", "2.0"))
@@ -89,6 +98,44 @@ _state: dict = {
 # address of this box, which is exactly what upstream matching needs. Kept in
 # memory only, so a restart re-learns rather than carrying a stale guess.
 _seen_hosts: set[str] = set()
+
+store = store_module.Store(CUSTOMISATIONS_PATH)
+
+# Set by an edit to make the refresh loop reconcile now rather than at the end of
+# its sleep. Edits already update the in-memory snapshot for instant feedback;
+# this is what re-derives everything properly straight afterwards.
+_refresh_now = threading.Event()
+
+
+def _merged_overrides(containers: list, yaml_cfg: dict, store_cfg: dict) -> dict:
+    """Combine apps.yml and the UI's customisations into exact-keyed overrides.
+
+    Resolved per container rather than by merging the two files, because
+    apps.yml keys may be a *prefix* of a container name while the UI always
+    writes the exact name. Merging the raw dicts would let an exact UI entry
+    shadow a prefix entry wholesale and silently drop its other fields; doing it
+    per container layers them field by field, with the UI on top.
+    """
+    apps_yaml = yaml_cfg.get("apps") or {}
+    apps_store = store_cfg.get("apps") or {}
+
+    merged: dict[str, dict] = {}
+    for facts in containers:
+        from_yaml = apps_yaml.get(facts.name)
+        if from_yaml is None:
+            for key, value in apps_yaml.items():
+                if facts.name.startswith(str(key)):
+                    from_yaml = value
+                    break
+        entry = {**(from_yaml or {}), **(apps_store.get(facts.name) or {})}
+        if entry:
+            merged[facts.name] = entry
+
+    return {
+        "apps": merged,
+        "defaults": yaml_cfg.get("defaults") or {},
+        "hide": yaml_cfg.get("hide") or [],
+    }
 
 
 def _load_overrides() -> dict:
@@ -165,7 +212,7 @@ def _refresh() -> None:
         apps = discovery.build_apps(
             containers=containers,
             proxy_hosts=proxy_hosts,
-            overrides=_load_overrides(),
+            overrides=_merged_overrides(containers, _load_overrides(), store.overrides()),
             host_ips=host_ips,
             edge=edge,
             self_name=me.name if me else "",
@@ -173,6 +220,14 @@ def _refresh() -> None:
         probe_target = _self_gateway(me) or "127.0.0.1"
     finally:
         client.close()
+
+    # Give every category in use a stable stored position, so it can be renamed
+    # like one the user created. Failure here is not fatal: the page still
+    # renders, only the editor loses some of its options.
+    try:
+        store.ensure_categories(sorted({a.category for a in apps}))
+    except store_module.ValidationError as exc:
+        log.warning("cannot register categories (%s); is ./config read-only?", exc)
 
     # Probe concurrently: a handful of unreachable ports would otherwise add
     # their full timeout each to every refresh.
@@ -211,7 +266,10 @@ def _refresh_loop() -> None:
             log.exception("refresh failed")
             with _state_lock:
                 _state["error"] = str(exc)
-        time.sleep(REFRESH_SECONDS)
+        # Interruptible sleep: an edit wakes this immediately so the stored
+        # change is re-derived rather than waiting out the interval.
+        _refresh_now.wait(timeout=REFRESH_SECONDS)
+        _refresh_now.clear()
 
 
 def _snapshot() -> dict:
@@ -252,13 +310,20 @@ def index() -> str:
     snap = _snapshot()
     host = _request_host()
     items = [a.as_dict(host) for a in snap["apps"]]
-    categories: dict[str, list[dict]] = {}
+
+    # Every known category is rendered, empty ones included: they are drop
+    # targets in edit mode. The template hides empty ones until editing starts,
+    # so the toggle needs no round trip.
+    grouped: dict[str, list[dict]] = {c: [] for c in _ordered_categories(snap["apps"])}
     for item in items:
-        categories.setdefault(item["category"], []).append(item)
+        grouped.setdefault(item["category"], []).append(item)
+
     return render_template(
         "index.html",
         title=SITE_TITLE,
-        categories=categories,
+        categories=grouped,
+        uncategorized=store_module.UNCATEGORIZED,
+        allow_edit=ALLOW_EDIT,
         total=len(items),
         online=sum(1 for a in items if a["online"]),
         public=sum(1 for a in items if a["public_urls"]),
@@ -278,6 +343,206 @@ def api_apps() -> Response:
         "edge": snap["edge"],
         "host_ips": snap["host_ips"],
     })
+
+
+# --------------------------------------------------------------------------
+# Edit mode
+# --------------------------------------------------------------------------
+
+def _require_edit():
+    """None when editing is permitted, else the response to return instead."""
+    if ALLOW_EDIT:
+        return None
+    return jsonify({"error": "Editing is disabled (ALLOW_EDIT=false)."}), 403
+
+
+def _members_of(category: str) -> list[str]:
+    """Containers currently shown under ``category``.
+
+    Includes those that landed there by derivation, not just by an explicit
+    assignment -- both have to be moved when a category is renamed or deleted,
+    or a derived one would spring back on the next scan.
+    """
+    with _state_lock:
+        return [a.key for a in _state["apps"] if a.category == category]
+
+
+def _patch_snapshot(fn) -> None:
+    """Apply a change to the in-memory cards, then ask for a re-derive.
+
+    Edits are written to disk first; this makes them visible immediately rather
+    than at the next scan, which is what stops a rename from appearing to do
+    nothing for half a minute.
+    """
+    with _state_lock:
+        for item in _state["apps"]:
+            fn(item)
+    _refresh_now.set()
+
+
+@app.route("/api/state")
+def api_state() -> Response:
+    """Everything the editor needs: cards, category order, and whether editing is on."""
+    snap = _snapshot()
+    return jsonify({
+        "apps": [a.as_dict(_request_host()) for a in snap["apps"]],
+        "categories": _ordered_categories(snap["apps"]),
+        "uncategorized": store_module.UNCATEGORIZED,
+        "allow_edit": ALLOW_EDIT,
+        "customisations": store.snapshot(),
+    })
+
+
+@app.route("/api/app/<path:key>", methods=["POST"])
+def api_set_app(key: str) -> Response:
+    """Customise one card: name, icon and/or category. Empty value resets it."""
+    blocked = _require_edit()
+    if blocked:
+        return blocked
+
+    payload = request.get_json(silent=True) or {}
+    known = {a.key: a for a in _snapshot()["apps"]}
+    if key not in known:
+        return jsonify({"error": "No such service."}), 404
+
+    fields = {f: payload[f] for f in ("name", "icon", "category") if f in payload}
+
+    # An icon may also be given as a URL: fetch it once now, cache it under a
+    # content-addressed slug, and store that -- so the page keeps serving icons
+    # from disk and never asks the browser to reach a third party.
+    if payload.get("icon_url"):
+        try:
+            fields["icon"] = _cache_icon_from_url(payload["icon_url"])
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    try:
+        store.set_app_fields(key, fields)
+    except store_module.ValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    # What the card should show now. A field that was not part of this request
+    # keeps its current value -- a request that only moves a card must not
+    # report, or apply, a stale name for it. A field that was *cleared* falls
+    # back to the derived value; if apps.yml also sets it, the scan triggered
+    # below restores that within a second.
+    target = known[key]
+    derived = {
+        "name": target.derived_name,
+        "icon": target.derived_icon,
+        "category": target.derived_category,
+    }
+    current = {"name": target.name, "icon": target.icon, "category": target.category}
+    resolved = {
+        field: (fields[field] or derived[field]) if field in fields else current[field]
+        for field in ("name", "icon", "category")
+    }
+
+    def apply(item):
+        if item.key != key:
+            return
+        for field in ("name", "icon", "category"):
+            if field in fields:
+                setattr(item, field, resolved[field])
+
+    _patch_snapshot(apply)
+    return jsonify({"ok": True, "app": {"key": key, **resolved}})
+
+
+@app.route("/api/categories", methods=["POST"])
+def api_categories() -> Response:
+    """Create, rename, delete or reorder categories."""
+    blocked = _require_edit()
+    if blocked:
+        return blocked
+
+    payload = request.get_json(silent=True) or {}
+    action = payload.get("action")
+
+    try:
+        if action == "create":
+            store.create_category(payload.get("name", ""))
+
+        elif action == "rename":
+            old, new = payload.get("name", ""), payload.get("new_name", "")
+            # Checked before the membership test below: Uncategorized is never
+            # in the stored list, so it would otherwise be reported as missing
+            # rather than as reserved.
+            if old == store_module.UNCATEGORIZED:
+                return jsonify({"error": f"{old} cannot be renamed."}), 400
+            if not any(c == old for c in store.categories()):
+                return jsonify({"error": "No such category."}), 404
+            new = store.rename_category(old, new, _members_of(old))
+            _patch_snapshot(lambda item: setattr(item, "category", new)
+                            if item.category == old else None)
+
+        elif action == "delete":
+            name = payload.get("name", "")
+            store.delete_category(name, _members_of(name))
+            _patch_snapshot(
+                lambda item: setattr(item, "category", store_module.UNCATEGORIZED)
+                if item.category == name else None)
+
+        elif action == "reorder":
+            store.reorder_categories(payload.get("order") or [])
+            _refresh_now.set()
+
+        else:
+            return jsonify({"error": "Unknown action."}), 400
+
+    except store_module.ValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({"ok": True, "categories": _ordered_categories(_snapshot()["apps"])})
+
+
+def _ordered_categories(apps: list) -> list[str]:
+    """Categories in display order: stored order first, then Uncategorized last.
+
+    Every stored category is listed even when empty, so a category created in
+    the UI has somewhere to drop things before it has any members.
+    """
+    stored = store.categories()
+    in_use = {a.category for a in apps}
+    order = [c for c in stored if c != store_module.UNCATEGORIZED]
+    order += sorted(c for c in in_use if c not in order and c != store_module.UNCATEGORIZED)
+    order.append(store_module.UNCATEGORIZED)
+    return order
+
+
+def _cache_icon_from_url(url: str) -> str:
+    """Fetch an icon from a URL and return the slug it was cached under."""
+    if not re.match(r"^https?://", url):
+        raise ValueError("An icon URL must start with http:// or https://.")
+    try:
+        resp = requests.get(url, timeout=8, stream=True, verify=False)
+        resp.raise_for_status()
+        data = resp.raw.read(FAVICON_MAX_BYTES + 1, decode_content=True) or b""
+        content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    except requests.RequestException as exc:
+        raise ValueError(f"Could not fetch that URL: {exc}") from exc
+
+    if not data:
+        raise ValueError("That URL returned nothing.")
+    if len(data) > FAVICON_MAX_BYTES:
+        raise ValueError("That image is too large (max 512 KB).")
+
+    suffix = _SUFFIX_BY_MIME.get(content_type)
+    if suffix is None:
+        for magic, guessed in _IMAGE_MAGIC:
+            if data.startswith(magic):
+                suffix = guessed
+                break
+        else:
+            if data[:200].lstrip().lower().startswith(b"<svg"):
+                suffix = ".svg"
+    if suffix is None:
+        raise ValueError("That URL is not an image.")
+
+    slug = "custom-" + hashlib.sha256(data).hexdigest()[:16]
+    ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (ICON_CACHE_DIR / f"{slug}{suffix}").write_bytes(data)
+    return slug
 
 
 @app.route("/healthz")

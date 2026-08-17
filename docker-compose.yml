@@ -22,6 +22,10 @@ services:
       PROBE_TIMEOUT: '2'
       # Set to true to also list stopped containers, greyed out.
       INCLUDE_STOPPED: 'false'
+      # Set false to serve a read-only dashboard with no edit button. Worth
+      # considering: the page is unauthenticated, so anyone who can open it can
+      # also rename and re-file things.
+      ALLOW_EDIT: 'true'
       # Optional, and normally unnecessary -- see README "Auto-detection".
       # HOST_IPS: 192.168.2.100,100.66.174.116
       # EDGE_CONFIG_DIR: /npm/proxy_host
@@ -30,7 +34,10 @@ services:
       # reads the reverse proxy's config through the API's archive endpoint.
       # Note :ro protects the socket *file*, not the API -- see README.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config:/config:ro
+      # Read-write, because edit mode writes config/customisations.json here.
+      # apps.yml is still only ever read. Mount :ro to forbid UI edits at the
+      # filesystem level as well as with ALLOW_EDIT.
+      - ./config:/config
       - ./cache:/cache
     healthcheck:
       test: ['CMD', 'python', '-c',

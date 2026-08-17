@@ -132,6 +132,12 @@ class App:
     category: str
     image: str
     running: bool
+    # What discovery would have called this with no overrides at all. Carried so
+    # the UI can offer "reset to automatic" and show it instantly, without
+    # waiting for a scan to recompute it.
+    derived_name: str = ""
+    derived_icon: str = ""
+    derived_category: str = ""
     lan_port: int | None = None
     lan_url_override: str | None = None
     scheme: str = "http"
@@ -158,6 +164,11 @@ class App:
             "lan_url": self.lan_url(request_host),
             "public_urls": self.public_urls,
             "online": self.online,
+            "derived": {
+                "name": self.derived_name,
+                "icon": self.derived_icon,
+                "category": self.derived_category,
+            },
         }
 
 
@@ -558,12 +569,19 @@ def build_apps(
         if not chosen_port and not cfg.get("url") and not public_urls:
             continue
 
+        derived_name = display_name(facts)
+        derived_icon = _icon_slug(facts)
+        derived_category = categorise(facts) or defaults.get("category", "Other")
+
         apps.append(
             App(
                 key=facts.name,
-                name=cfg.get("name") or display_name(facts),
-                icon=cfg.get("icon") or _icon_slug(facts),
-                category=cfg.get("category") or categorise(facts) or defaults.get("category", "Other"),
+                name=cfg.get("name") or derived_name,
+                icon=cfg.get("icon") or derived_icon,
+                category=cfg.get("category") or derived_category,
+                derived_name=derived_name,
+                derived_icon=derived_icon,
+                derived_category=derived_category,
                 image=facts.image,
                 running=facts.running,
                 lan_port=chosen_port,

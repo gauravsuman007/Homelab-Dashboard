@@ -129,6 +129,55 @@ jobs:
           assert not discovery.acceptable_request_host("8.8.8.8")
           assert not discovery.acceptable_request_host("not-an-ip")
 
+          # Customisation store: the rules the edit UI depends on.
+          import tempfile, pathlib
+          import store as S
+
+          path = pathlib.Path(tempfile.mkdtemp()) / "c.json"
+          st = S.Store(path)
+
+          st.create_category("Games")
+          try:
+              st.create_category("games")
+              raise AssertionError("duplicate category accepted")
+          except S.ValidationError:
+              pass
+
+          # Renaming carries members with it, including ones that were only
+          # there by derivation -- otherwise they spring back on the next scan.
+          st.set_app_fields("plex", {"name": "Plex Media", "category": "Games"})
+          st.rename_category("Games", "Arcade", ["plex"])
+          assert st.categories() == ["Arcade"]
+          assert st.overrides()["apps"]["plex"]["category"] == "Arcade"
+
+          # Deleting moves members to Uncategorized, which is itself immovable.
+          st.delete_category("Arcade", ["plex"])
+          assert st.overrides()["apps"]["plex"]["category"] == S.UNCATEGORIZED
+          for op in (lambda: st.delete_category(S.UNCATEGORIZED, []),
+                     lambda: st.rename_category(S.UNCATEGORIZED, "Junk", [])):
+              try:
+                  op()
+                  raise AssertionError("Uncategorized was mutable")
+              except S.ValidationError:
+                  pass
+
+          # Clearing a field resets it; clearing every field drops the entry.
+          st.set_app_fields("plex", {"name": "", "category": ""})
+          assert "plex" not in st.overrides()["apps"]
+
+          # An icon name becomes a filename, so it is validated like one.
+          try:
+              st.set_app_fields("plex", {"icon": "../../etc/passwd"})
+              raise AssertionError("path traversal accepted")
+          except S.ValidationError:
+              pass
+
+          # Edits survive a restart, and a mangled file is not fatal.
+          st.set_app_fields("sonarr", {"name": "TV"})
+          assert S.Store(path).overrides()["apps"]["sonarr"]["name"] == "TV"
+          path.write_text("{ not json")
+          assert S.Store(path).categories() == []
+
           import server  # must import with no docker socket present
           assert server.app is not None
 
