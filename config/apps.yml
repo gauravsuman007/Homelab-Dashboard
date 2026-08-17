@@ -47,6 +47,11 @@ apps:
     name: Paperless-ngx
   audiobookbay_downloader-audiobookbay-downloader:
     name: AudiobookBay
+  # These two would auto-disambiguate to "(Local)" and "(Torbox)"; both are
+  # pinned only to get TorBox's capitalisation right. Pinning one name takes it
+  # out of the collision, so the pair has to be named together or not at all.
+  decypharr_local:
+    name: Decypharr (Local)
   decypharr_torbox:
     name: Decypharr (TorBox)
 
