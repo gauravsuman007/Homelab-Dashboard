@@ -252,6 +252,136 @@
       .catch(function () { updated.textContent = "refresh failed — server unreachable"; });
   }
 
+  /* Appearance ----------------------------------------------------------
+   *
+   * Theme has three states, and the third one matters: "system" means *no*
+   * data-theme attribute, which is what lets the stylesheet's media query
+   * follow the device. Storing "dark" as the default would freeze every
+   * visitor's palette to whatever the last person picked.
+   *
+   * Accent and background are shared, like renames are -- one dashboard for
+   * one household. A single device can still pin its own palette with
+   * ?theme=, which the server resolves ahead of the stored value. */
+
+  var THEMES = ["system", "dark", "light"];
+  var themeToggle = document.getElementById("theme-toggle");
+  var appearanceDialog = document.getElementById("appearance");
+  var look = { theme: "system", accent: "", background: "plain", background_dim: 55 };
+
+  function applyTheme(name) {
+    if (name === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", name);
+    if (themeToggle) {
+      themeToggle.title = name === "system"
+        ? "Theme: follows this device" : "Theme: " + name;
+    }
+  }
+
+  function saveLook(fields, onError) {
+    return post("/api/appearance", fields)
+      .then(function (data) { look = data.appearance; return look; })
+      .catch(function (err) {
+        if (onError) onError(err);
+        else toast(err.message);
+        throw err;
+      });
+  }
+
+  if (themeToggle) {
+    themeToggle.addEventListener("click", function () {
+      var next = THEMES[(THEMES.indexOf(look.theme) + 1) % THEMES.length];
+      var previous = look.theme;
+      // Paint first: a theme flip should feel instant, and the server round
+      // trip only decides whether it survives a reload.
+      look.theme = next;
+      applyTheme(next);
+      saveLook({ theme: next }, function (err) {
+        look.theme = previous;
+        applyTheme(previous);
+        toast(body.dataset.canEdit ? err.message : "Editing is disabled, so the theme is not saved.");
+      });
+    });
+  }
+
+  function markChoice(container, value) {
+    container.querySelectorAll("button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.value === value));
+    });
+  }
+
+  function paintAppearanceForm() {
+    markChoice(document.getElementById("a-theme"), look.theme);
+    markChoice(document.getElementById("a-accent"), look.accent || "");
+    markChoice(document.getElementById("a-background"), look.background);
+    var dim = document.getElementById("a-dim");
+    dim.value = look.background_dim;
+    document.getElementById("a-dim-value").textContent = look.background_dim + "%";
+  }
+
+  function wireAppearance() {
+    if (!appearanceDialog) return;
+    var error = document.getElementById("appearance-error");
+
+    function attempt(fields) {
+      error.hidden = true;
+      // The look is applied by the stylesheet on the next render, so a reload
+      // is the honest way to show the result rather than duplicating every
+      // rule in JavaScript.
+      saveLook(fields, function (err) {
+        error.textContent = err.message;
+        error.hidden = false;
+      }).then(function () { window.location.reload(); });
+    }
+
+    document.getElementById("a-theme").addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-value]");
+      if (b) attempt({ theme: b.dataset.value });
+    });
+    document.getElementById("a-accent").addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-value]");
+      if (b) attempt({ accent: b.dataset.value });
+    });
+    document.getElementById("a-background").addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-value]");
+      if (b) attempt({ background: b.dataset.value });
+    });
+    document.getElementById("a-accent-custom").addEventListener("change", function (e) {
+      attempt({ accent: e.target.value });
+    });
+    document.getElementById("a-bg-url").addEventListener("change", function (e) {
+      if (e.target.value.trim()) attempt({ background_image_url: e.target.value.trim() });
+    });
+
+    var dim = document.getElementById("a-dim");
+    dim.addEventListener("input", function () {
+      document.getElementById("a-dim-value").textContent = dim.value + "%";
+    });
+    dim.addEventListener("change", function () { attempt({ background_dim: Number(dim.value) }); });
+
+    document.getElementById("appearance-reset").addEventListener("click", function () {
+      attempt({ accent: "", background: "plain", theme: "system", background_dim: 55 });
+    });
+    document.getElementById("appearance-close").addEventListener("click", function () {
+      appearanceDialog.close();
+    });
+
+    var open = document.getElementById("appearance-open");
+    if (open) {
+      open.addEventListener("click", function () {
+        paintAppearanceForm();
+        appearanceDialog.showModal();
+      });
+    }
+  }
+
+  // The server rendered the current look already; this only syncs the JS copy
+  // so the toggle knows where in the cycle it is.
+  fetch("/api/state", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (data) { if (data.appearance) look = data.appearance; })
+    .catch(function () {});
+  wireAppearance();
+
   /* Edit mode ----------------------------------------------------------- */
 
   function setEditing(on) {
@@ -261,6 +391,8 @@
     editToggle.querySelector(".label").textContent = on ? "Done" : "Edit";
     if (editHint) editHint.hidden = !on;
     if (addCat) addCat.hidden = !on;
+    var appearanceOpen = document.getElementById("appearance-open");
+    if (appearanceOpen) appearanceOpen.hidden = !on;
     document.querySelectorAll(".card").forEach(function (c) { c.draggable = on; });
     document.querySelectorAll(".cat-name").forEach(function (n) {
       n.contentEditable = on ? "true" : "false";
@@ -328,7 +460,7 @@
   function makeGhost(source, event) {
     var rect = source.getBoundingClientRect();
     var ghost = source.cloneNode(true);
-    ghost.classList.add("ghost");
+    ghost.classList.add("drag-ghost");
     ghost.style.width = rect.width + "px";
     ghost.style.left = rect.left + "px";
     ghost.style.top = rect.top + "px";

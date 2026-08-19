@@ -315,17 +315,19 @@ body.editing .grip {
 
 /* Editor dialog --------------------------------------------------------- */
 
-#editor {
+dialog {
   width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
   padding: 0;
   color: var(--text);
   background: var(--bg-soft);
   border: 1px solid var(--line);
   border-radius: 14px;
 }
-#editor::backdrop { background: rgba(4, 7, 16, 0.62); }
-#editor form { padding: 18px; }
-#editor h3 { margin: 0 0 2px; font-size: 15px; }
+dialog::backdrop { background: rgba(4, 7, 16, 0.62); }
+dialog form { padding: 18px; }
+dialog h3 { margin: 0 0 2px; font-size: 15px; }
 .editor-key {
   margin: 0 0 16px;
   color: var(--muted);
@@ -333,7 +335,7 @@ body.editing .grip {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   word-break: break-all;
 }
-#editor label {
+dialog label {
   display: block;
   margin-bottom: 5px;
   font-size: 12px;
@@ -342,7 +344,7 @@ body.editing .grip {
   text-transform: uppercase;
   color: var(--muted);
 }
-#editor input, #editor select {
+dialog input:not([type="range"]):not([type="color"]), dialog select {
   width: 100%;
   padding: 8px 10px;
   color: var(--text);
@@ -352,8 +354,8 @@ body.editing .grip {
   font: inherit;
   font-size: 14px;
 }
-#editor input:focus, #editor select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-#editor select { margin-bottom: 4px; }
+dialog input:focus, dialog select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+dialog select { margin-bottom: 4px; }
 .field-note { margin: 5px 0 14px; color: var(--muted); font-size: 11.5px; }
 .field-note a { color: var(--accent); }
 .icon-row { display: flex; align-items: center; gap: 10px; }
@@ -369,28 +371,28 @@ body.editing .grip {
   font-size: 12.5px;
 }
 
-#editor menu {
+dialog menu {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 18px 0 0;
   padding: 0;
 }
-#editor menu .spacer { flex: 1; }
-#editor button {
+dialog menu .spacer { flex: 1; }
+dialog menu button, dialog .icon-row button {
   padding: 8px 13px;
   border-radius: 8px;
   font: inherit;
   font-size: 13px;
   cursor: pointer;
 }
-#editor .ghost {
+dialog menu .ghost {
   color: var(--muted);
   background: transparent;
   border: 1px solid var(--line);
 }
-#editor .ghost:hover { color: var(--text); border-color: var(--accent); }
-#editor .primary {
+dialog menu .ghost:hover { color: var(--text); border-color: var(--accent); }
+dialog menu .primary {
   color: #fff;
   background: var(--accent);
   border: 1px solid var(--accent);
@@ -414,7 +416,7 @@ body.editing .cat-grip { display: inline-block; }
 body.editing .grip { touch-action: none; cursor: grab; }
 .cat.dragging { opacity: 0.5; }
 
-.ghost {
+.drag-ghost {
   position: fixed;
   z-index: 60;
   margin: 0;
@@ -539,3 +541,108 @@ body.compact .vitals { display: none; }
   .meter { width: 56px; }
   .vitals { gap: 6px 12px; font-size: 11px; }
 }
+
+/* Backgrounds --------------------------------------------------------------
+   Each is drawn with CSS on a fixed pseudo-element rather than an asset, so
+   they cost nothing to ship, scale to any screen, and follow the accent colour
+   and the theme automatically. `plain` emits nothing at all. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* A soft wash of the accent, brightest behind the header where the eye lands. */
+body.bg-glow::before {
+  background:
+    radial-gradient(60rem 30rem at 15% -10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%),
+    radial-gradient(45rem 25rem at 95% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 65%);
+}
+
+/* Blueprint grid. Lines are drawn from the text colour, so it inverts with the
+   theme without a second definition. */
+body.bg-grid::before {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(120% 90% at 50% 0%, #000 35%, transparent 85%);
+}
+
+body.bg-mesh::before {
+  background:
+    radial-gradient(35rem 35rem at 10% 10%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 60%),
+    radial-gradient(30rem 30rem at 85% 20%, color-mix(in srgb, #a855f7 16%, transparent), transparent 60%),
+    radial-gradient(30rem 30rem at 60% 95%, color-mix(in srgb, #06b6d4 14%, transparent), transparent 60%);
+  filter: saturate(1.1);
+}
+
+/* A user-supplied image, always behind a scrim: an arbitrary photo under white
+   text is unreadable, so the dim is part of the feature rather than an option
+   to forget. The image is served from our own cache, never a remote host. */
+body.bg-image::before {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--bg) var(--bg-dim, 55%), transparent),
+                    color-mix(in srgb, var(--bg) var(--bg-dim, 55%), transparent)),
+    var(--bg-image, none);
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+}
+
+/* Appearance dialog -------------------------------------------------------- */
+.choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.choices button {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.choices button:hover { background: var(--card-hover); }
+.choices button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--card));
+}
+
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--s, var(--card));
+  cursor: pointer;
+  padding: 0;
+}
+.swatch[aria-pressed="true"] { border-color: var(--text); }
+.swatch.reset {
+  background: var(--card);
+  border: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+#a-accent-custom {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+.inline-label { display: flex; justify-content: space-between; align-items: baseline; }
+#a-dim { width: 100%; accent-color: var(--accent); }
+
+/* The appearance sheet is wider than the card editor: eight swatches and four
+   background pills both want a single row each. */
+#appearance { width: min(460px, calc(100vw - 32px)); }
+#appearance label { margin-top: 14px; }
+#appearance label:first-of-type { margin-top: 0; }
+#appearance #a-bg-url { margin-top: 8px; }

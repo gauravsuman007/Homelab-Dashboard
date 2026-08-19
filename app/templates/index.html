@@ -7,8 +7,24 @@
 <title>{{ title }}</title>
 <link rel="icon" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/style.css">
+{% if look.accent or look.background != 'plain' %}
+{# Only the values that differ from the stylesheet's own are emitted, so the
+   default page ships no inline style at all. Both are validated server-side
+   against a fixed set before reaching this point. #}
+<style>
+  :root {
+  {%- if look.accent %}
+    --accent: {{ look.accent }};
+  {%- endif %}
+  {%- if look.background == 'image' and look.background_url %}
+    --bg-image: url("/icon/{{ look.background_url }}");
+    --bg-dim: {{ look.background_dim }}%;
+  {%- endif %}
+  }
+</style>
+{% endif %}
 </head>
-<body class="{% if embed %}embed {% endif %}{% if compact %}compact{% endif %}"
+<body class="bg-{{ look.background }}{% if embed %} embed{% endif %}{% if compact %} compact{% endif %}"
       data-uncategorized="{{ uncategorized }}"{% if allow_edit %} data-can-edit="1"{% endif %}>
 <header class="bar">
   <div class="brand">
@@ -26,6 +42,14 @@
            aria-expanded="false" aria-controls="grid" aria-autocomplete="list">
     <span id="search-count" class="search-count" aria-live="polite"></span>
   </div>
+  <button id="theme-toggle" type="button" class="icon-btn" title="Theme: follows this device"
+          aria-label="Change theme">
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+      <circle cx="10" cy="10" r="4.2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M10 1.6v2.2M10 16.2v2.2M1.6 10h2.2M16.2 10h2.2M4.1 4.1l1.6 1.6M14.3 14.3l1.6 1.6M15.9 4.1l-1.6 1.6M5.7 14.3l-1.6 1.6"
+            stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+  </button>
   {% if allow_edit %}
   <button id="edit-toggle" type="button" class="icon-btn" aria-pressed="false" title="Edit layout">
     <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
@@ -122,6 +146,7 @@
 
 {% if allow_edit %}
 <button type="button" id="cat-add" class="add-cat" hidden>+ Add category</button>
+<button type="button" id="appearance-open" class="add-cat" hidden>Appearance…</button>
 {% endif %}
 
 {% if total == 0 %}
@@ -165,6 +190,52 @@
       <span class="spacer"></span>
       <button type="button" id="editor-cancel" class="ghost">Cancel</button>
       <button type="button" id="editor-save" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="appearance">
+  <form method="dialog" id="appearance-form">
+    <h3>Appearance</h3>
+    <p class="field-note">Shared by every device that opens this page.</p>
+
+    <label>Theme</label>
+    <div class="choices" id="a-theme">
+      <button type="button" data-value="system">Follow device</button>
+      <button type="button" data-value="dark">Dark</button>
+      <button type="button" data-value="light">Light</button>
+    </div>
+
+    <label>Accent</label>
+    <div class="swatches" id="a-accent">
+      <button type="button" data-value="" class="swatch reset" title="Default">✕</button>
+      <button type="button" data-value="#5b8cff" class="swatch" style="--s: #5b8cff"></button>
+      <button type="button" data-value="#22c55e" class="swatch" style="--s: #22c55e"></button>
+      <button type="button" data-value="#f59e0b" class="swatch" style="--s: #f59e0b"></button>
+      <button type="button" data-value="#ef4444" class="swatch" style="--s: #ef4444"></button>
+      <button type="button" data-value="#a855f7" class="swatch" style="--s: #a855f7"></button>
+      <button type="button" data-value="#06b6d4" class="swatch" style="--s: #06b6d4"></button>
+      <button type="button" data-value="#ec4899" class="swatch" style="--s: #ec4899"></button>
+      <input type="color" id="a-accent-custom" title="Custom accent" value="#5b8cff">
+    </div>
+
+    <label>Background</label>
+    <div class="choices" id="a-background">
+      <button type="button" data-value="plain">Plain</button>
+      <button type="button" data-value="glow">Glow</button>
+      <button type="button" data-value="grid">Grid</button>
+      <button type="button" data-value="mesh">Mesh</button>
+    </div>
+    <input id="a-bg-url" type="url" placeholder="…or an image URL to download and keep" autocomplete="off">
+    <label for="a-dim" class="inline-label">Image dimming <span id="a-dim-value">55%</span></label>
+    <input id="a-dim" type="range" min="0" max="90" step="5" value="55">
+
+    <p class="editor-error" id="appearance-error" hidden></p>
+
+    <menu>
+      <button type="button" id="appearance-reset" class="ghost">Reset</button>
+      <span class="spacer"></span>
+      <button type="button" id="appearance-close" class="ghost">Close</button>
     </menu>
   </form>
 </dialog>

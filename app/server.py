@@ -344,7 +344,14 @@ def index() -> str:
     items = [a.as_dict(host) for a in snap["apps"]]
 
     embed = _flag("embed")
+    look = store.appearance()
+    # Precedence: the query parameter (an embedder pinning a palette to match
+    # its host page) beats the stored preference, which beats the device's own
+    # setting. "system" is expressed as *no* attribute, which is what lets the
+    # CSS media query take over.
     theme = request.args.get("theme", "").lower()
+    if theme not in {"dark", "light"}:
+        theme = look["theme"] if look["theme"] in {"dark", "light"} else ""
     wanted = [c.strip().casefold() for c in request.args.get("category", "").split(",") if c.strip()]
 
     # Every known category is rendered, empty ones included: they are drop
@@ -368,7 +375,8 @@ def index() -> str:
         allow_edit=ALLOW_EDIT and (not embed or _flag("edit")),
         embed=embed,
         compact=_flag("compact"),
-        theme=theme if theme in {"dark", "light"} else "",
+        theme=theme,
+        look=look,
         total=len(items),
         online=sum(1 for a in items if a["online"]),
         public=sum(1 for a in items if a["public_urls"]),
@@ -439,6 +447,7 @@ def api_state() -> Response:
         "uncategorized": store_module.UNCATEGORIZED,
         "allow_edit": ALLOW_EDIT,
         "customisations": store.snapshot(),
+        "appearance": store.appearance(),
     })
 
 
@@ -592,6 +601,43 @@ def _cache_icon_from_url(url: str) -> str:
     ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     (ICON_CACHE_DIR / f"{slug}{suffix}").write_bytes(data)
     return slug
+
+
+@app.route("/api/appearance", methods=["POST"])
+def api_appearance() -> Response | tuple:
+    """Set the shared look: theme, accent, background.
+
+    Shared rather than per-device on purpose -- it is stored next to the
+    renames and category assignments, and for the same reason: this is one
+    dashboard for one household, and a look chosen on a laptop should be the
+    look the wall tablet shows. A single device can still override the palette
+    for itself with ``?theme=``, which wins over the stored value.
+    """
+    denial = _require_edit()
+    if denial:
+        return denial
+
+    payload = request.get_json(silent=True) or {}
+    fields = {k: payload[k] for k in
+              ("theme", "accent", "background", "background_dim") if k in payload}
+
+    # An image is fetched and cached server-side, exactly like a custom icon,
+    # so the page never loads from a third-party host and no URL supplied in
+    # the form is ever rendered into the markup.
+    if payload.get("background_image_url"):
+        try:
+            fields["background_url"] = _cache_icon_from_url(payload["background_image_url"])
+            fields["background"] = "image"
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    elif payload.get("background") and payload["background"] != "image":
+        fields["background_url"] = ""
+
+    try:
+        store.set_appearance(fields)
+    except store_module.ValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "appearance": store.appearance()})
 
 
 @app.route("/healthz")

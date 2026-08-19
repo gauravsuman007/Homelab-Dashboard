@@ -234,6 +234,37 @@ jobs:
           path.write_text("{ not json")
           assert S.Store(path).categories() == []
 
+          # Appearance. These values are interpolated into a <style> block,
+          # so anything that is not obviously a colour must be refused.
+          look = S.Store(path)
+          assert look.appearance()["theme"] == "system", "default must follow the device"
+          assert look.appearance()["accent"] == ""
+
+          look.set_appearance({"accent": "#a855f7", "background": "grid", "theme": "dark"})
+          assert look.appearance()["accent"] == "#a855f7"
+          assert look.appearance()["background"] == "grid"
+
+          for bad in ({"accent": "red; } body { display: none"}, {"accent": "javascript:x"},
+                      {"accent": "url(http://evil/x)"}, {"theme": "neon"},
+                      {"background": "../../etc"}, {"background_url": "http://evil/x.png"},
+                      {"nonsense": "1"}):
+              try:
+                  look.set_appearance(bad)
+                  raise AssertionError("appearance accepted %r" % bad)
+              except S.ValidationError:
+                  pass
+
+          # Clearing a field returns it to the default and drops it from disk,
+          # so a reset leaves no residue to puzzle over later.
+          look.set_appearance({"accent": "", "background": "plain", "theme": "system"})
+          assert look.appearance()["accent"] == ""
+          assert look.snapshot().get("appearance") == {}, look.snapshot().get("appearance")
+
+          # Dim is clamped rather than rejected: a slider cannot send nonsense,
+          # but an API caller can, and a black page is not a useful error.
+          look.set_appearance({"background_dim": 500})
+          assert look.appearance()["background_dim"] == 90
+
           # Host vitals. Every source is optional, so the reading must survive
           # a machine where none of them can be read.
           import stats as V
@@ -279,10 +310,12 @@ jobs:
 
           page = plain.data.decode()
           assert 'id="search-count"' in page, "live search needs its result readout"
+          assert 'id="theme-toggle"' in page, "the palette toggle is not an edit-mode feature"
+          assert "<style>" not in page, "the default look must add no inline style"
 
           embed = client.get("/?embed=1&compact=1&theme=light").data.decode()
           assert 'id="vitals"' not in embed, "compact must not spend rows on vitals"
-          assert 'class="embed compact"' in embed
+          assert 'class="bg-plain embed compact"' in embed
           assert 'data-theme="light"' in embed
           assert 'id="edit-toggle"' not in embed, "embed must not offer editing"
           assert 'id="edit-toggle"' in client.get("/?embed=1&edit=1").data.decode()

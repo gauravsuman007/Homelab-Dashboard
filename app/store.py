@@ -42,6 +42,21 @@ MAX_NAME_LENGTH = 60
 # and as part of a URL is never trusted loose.
 _ICON_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
+# Appearance. Values are constrained to a known set rather than accepted as free
+# text because they are interpolated straight into a style attribute -- a colour
+# that can be anything is a stylesheet injection, so it has to look like a
+# colour before it goes anywhere near the page.
+_HEX_RE = re.compile(r"^#(?:[0-9a-f]{3}|[0-9a-f]{6})$")
+THEMES = ("system", "dark", "light")
+BACKGROUNDS = ("plain", "glow", "grid", "mesh", "image")
+APPEARANCE_DEFAULTS = {
+    "theme": "system",
+    "accent": "",          # empty means the stylesheet's own accent
+    "background": "plain",
+    "background_url": "",  # a cached slug, not a remote URL
+    "background_dim": 55,  # percent of scrim over an image, so text stays legible
+}
+
 
 class ValidationError(ValueError):
     """A rejected edit. The message is shown to the user, so keep it readable."""
@@ -74,7 +89,7 @@ class Store:
         renamed aside so the damage is recoverable and a fresh one is started.
         """
         if not self.path.is_file():
-            return {"version": SCHEMA_VERSION, "categories": [], "apps": {}}
+            return {"version": SCHEMA_VERSION, "categories": [], "apps": {}, "appearance": {}}
         try:
             data = json.loads(self.path.read_text())
             if not isinstance(data, dict):
@@ -85,11 +100,14 @@ class Store:
                 self.path.rename(self.path.with_suffix(".json.corrupt"))
             except OSError:
                 pass
-            return {"version": SCHEMA_VERSION, "categories": [], "apps": {}}
+            return {"version": SCHEMA_VERSION, "categories": [], "apps": {}, "appearance": {}}
 
         data.setdefault("version", SCHEMA_VERSION)
         data.setdefault("categories", [])
         data.setdefault("apps", {})
+        data.setdefault("appearance", {})
+        if not isinstance(data["appearance"], dict):
+            data["appearance"] = {}
         if not isinstance(data["categories"], list):
             data["categories"] = []
         if not isinstance(data["apps"], dict):
@@ -134,6 +152,67 @@ class Store:
     def categories(self) -> list[str]:
         with self._lock:
             return list(self._data["categories"])
+
+    def appearance(self) -> dict:
+        """Stored look, with every unset field filled in from the defaults.
+
+        Always complete, so callers never branch on a missing key and the
+        template can interpolate the result directly.
+        """
+        with self._lock:
+            stored = self._data.get("appearance") or {}
+        return {**APPEARANCE_DEFAULTS, **{k: v for k, v in stored.items()
+                                          if k in APPEARANCE_DEFAULTS}}
+
+    def set_appearance(self, fields: dict) -> None:
+        """Validate and store appearance fields; an empty value resets one.
+
+        Same clear-to-reset rule the per-service edits use: sending "" for a
+        field removes it, so "back to the default" needs no separate endpoint.
+        """
+        clean: dict = {}
+        for key, raw in fields.items():
+            if key not in APPEARANCE_DEFAULTS:
+                raise ValidationError(f"Unknown appearance setting: {key}")
+            value = raw if isinstance(raw, int) else str(raw or "").strip()
+
+            if value == "" and key != "theme":
+                clean[key] = ""
+                continue
+            if key == "theme":
+                value = (value or "system").lower()
+                if value not in THEMES:
+                    raise ValidationError(f"Theme must be one of {', '.join(THEMES)}.")
+            elif key == "accent":
+                value = str(value).lower()
+                if not _HEX_RE.match(value):
+                    raise ValidationError("Accent must be a hex colour such as #5b8cff.")
+            elif key == "background":
+                value = str(value).lower()
+                if value not in BACKGROUNDS:
+                    raise ValidationError(f"Background must be one of {', '.join(BACKGROUNDS)}.")
+            elif key == "background_url":
+                # A cached slug, never a remote address: the server downloads
+                # the image and hands back a name, so the page never fetches
+                # from a third party and no URL from the form is ever rendered.
+                if not _ICON_RE.match(str(value)):
+                    raise ValidationError("Background image must be a cached name.")
+            elif key == "background_dim":
+                try:
+                    value = max(0, min(90, int(value)))
+                except (TypeError, ValueError):
+                    raise ValidationError("Dim must be a number.") from None
+            clean[key] = value
+
+        with self._lock:
+            current = dict(self._data.get("appearance") or {})
+            for key, value in clean.items():
+                if value == "" or value == APPEARANCE_DEFAULTS[key]:
+                    current.pop(key, None)
+                else:
+                    current[key] = value
+            self._data["appearance"] = current
+            self._save()
 
     # -- per-service edits ------------------------------------------------
 
