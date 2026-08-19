@@ -513,6 +513,10 @@ the finished virtualenv.
 | --- | --- |
 | [![dark](docs/screenshot.png)](docs/screenshot.png) | [![light](docs/light.png)](docs/light.png) |
 
+Theme, accent and background live behind **Edit → Appearance…**:
+
+<img src="docs/appearance.png" alt="The appearance sheet: theme, accent swatches and background options" width="440">
+
 The palette follows the device unless `?theme=` pins it. Embedded and compact,
 at phone width — this is what the Home Assistant card renders:
 
