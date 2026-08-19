@@ -20,7 +20,8 @@ drag it to another category. That sticks, and everything you *didn't* touch keep
 updating itself.
 
 > **Scope, so you can rule it out fast.** This is a launcher for a LAN or tailnet:
-> links, categories, a reachability dot, host vitals and a keyboard search. It has
+> links, categories, a reachability dot, host vitals, a keyboard search and
+> theming. It has
 > no *per-service* API widgets — no Sonarr queue depth, no qBittorrent speeds — no
 > bookmarks, and no login; access control is the nginx ACL below. If you want live per-service API panels, you want
 > [Homepage](https://github.com/gethomepage/homepage) or
@@ -53,6 +54,8 @@ also all need to be told what you are running:
 | | What it wants from you | Widgets | Host stats | Editing |
 | --- | --- | --- | --- | --- |
 | **This** | a socket | none | built in | in the page |
+
+All of them theme; this one does it from the page rather than from a config file.
 | [Homepage](https://github.com/gethomepage/homepage) | a `homepage.*` label per container, or YAML | ~100 service widgets | a widget | edit YAML |
 | [Homarr](https://github.com/homarr-labs/homarr) | place every tile by hand | 40+ integrations | a widget | in the page |
 | [Dashy](https://github.com/Lissy93/dashy) | YAML listing every service | widgets, themes | a widget | UI editor |
@@ -199,6 +202,43 @@ To add another, extend `EDGE_KINDS` in `app/discovery.py` with an image marker
 and a `source` of `"config"` (then give `parse_proxy_hosts` a branch) or
 `"labels"` (then add a parser to `LABEL_PARSERS`). Either way it returns
 `ProxyHost` objects and nothing downstream changes.
+
+## Theming
+
+A palette toggle sits in the header — it cycles **follow device → dark → light**,
+and "follow device" is the default rather than a stored colour, so a new visitor
+gets their own system preference instead of whatever the last person picked.
+
+Everything else lives behind **Edit → Appearance…**:
+
+- **Accent** — eight swatches or any colour you like. It drives links, focus
+  rings, meters and the generated backgrounds, because they all read the same
+  custom property.
+- **Background** — `plain`, `glow` (a wash of the accent), `grid` (a blueprint
+  grid), `mesh` (soft colour fields), or an image of your own. The first four are
+  drawn in CSS, so they ship no assets, scale to any screen, and invert with the
+  theme without a second definition.
+- **Image backgrounds** are downloaded once and served from this container's own
+  cache, so the page never loads from a third-party host and no URL from the form
+  is ever rendered into the markup. The image always sits behind an adjustable
+  scrim (default 55%) — an arbitrary photo under white text is unreadable, so the
+  dimming is part of the feature rather than something to remember.
+
+Appearance is **shared, like renames are**: one dashboard for one household, and
+a look chosen on a laptop should be the look the wall tablet shows. A single
+device can still pin its own palette with `?theme=dark` or `?theme=light`, which
+wins over the stored value — that is also how the Home Assistant card matches its
+host page.
+
+Precedence, in full:
+
+    ?theme=  >  stored preference  >  the device's own setting
+
+Two notes on how this is built. The default page emits **no inline style at all**;
+only values that differ from the stylesheet's own are written into a `<style>`
+block. And those values are validated against a fixed set server-side before they
+get there, since an accent colour that could be any string would be a stylesheet
+injection.
 
 ## Search and vitals
 
