@@ -56,14 +56,80 @@
 
   /* Filtering ----------------------------------------------------------- */
 
+  /* Live search ---------------------------------------------------------
+   *
+   * Subsequence matching, not substring: "abs" finds Audiobookshelf and "jf"
+   * finds Jellyfin, which is how people actually type when they already know
+   * what they are looking for. Ranking puts a prefix hit above a word-boundary
+   * hit above a scattered one, so the top result is the obvious one and Enter
+   * can be trusted to open it.
+   *
+   * Everything runs against the DOM already on the page -- there is no search
+   * endpoint and no round trip, so results keep up with a held-down key. */
+
+  var searchCount = document.getElementById("search-count");
+  var selected = null;
+
+  function score(haystack, needle) {
+    // -1 for no match; lower is better.
+    if (!needle) return 0;
+
+    // A literal substring always beats a scattered match, however tight the
+    // scatter -- typing "arr" should not rank Radarr below something whose
+    // a, r and r happen to sit close together. Earliest occurrence wins.
+    var direct = haystack.indexOf(needle);
+    if (direct >= 0) return direct;
+
+    var i = 0, j = 0, gaps = 0, first = -1, boundary = false;
+    while (i < haystack.length && j < needle.length) {
+      if (haystack.charAt(i) === needle.charAt(j)) {
+        if (first < 0) {
+          first = i;
+          boundary = i === 0 || " -_./(".indexOf(haystack.charAt(i - 1)) !== -1;
+        }
+        j++;
+      } else if (j > 0) {
+        gaps++;
+      }
+      i++;
+    }
+    if (j < needle.length) return -1;
+    // Where the match starts matters far more than how tightly it is packed:
+    // "abs" should find Audiobookshelf, whose letters are spread across the
+    // word, ahead of a name where a-b-s happen to fall adjacent mid-string.
+    // The 1000 floor keeps every subsequence hit below every substring hit.
+    return 1000 + first * 6 + gaps * 2 + (boundary ? 0 : 8);
+  }
+
+  function visibleCards() {
+    return Array.prototype.slice
+      .call(grid.querySelectorAll(".card"))
+      .filter(function (c) { return !c.hidden; });
+  }
+
+  function select(card) {
+    if (selected) selected.classList.remove("selected");
+    selected = card || null;
+    if (selected) {
+      selected.classList.add("selected");
+      selected.scrollIntoView({ block: "nearest" });
+    }
+  }
+
   function applyFilter() {
     var q = (filter.value || "").trim().toLowerCase();
+    var hits = [];
+
     sections().forEach(function (section) {
       var shown = 0;
       section.querySelectorAll(".card").forEach(function (card) {
-        var hit = !q || card.dataset.name.indexOf(q) !== -1;
+        var rank = score(card.dataset.name, q);
+        var hit = rank >= 0;
         card.hidden = !hit;
-        if (hit) shown++;
+        if (hit) {
+          shown++;
+          hits.push({ card: card, rank: rank });
+        }
       });
       // In edit mode every category stays visible: an empty one is still a
       // drop target, and hiding it mid-drag would be hostile.
@@ -76,22 +142,86 @@
         badge.textContent = q ? shown : section.querySelectorAll(".card").length;
       }
     });
+
+    if (searchCount) {
+      searchCount.textContent = q ? (hits.length + (hits.length === 1 ? " match" : " matches")) : "";
+      searchCount.classList.toggle("none", Boolean(q) && hits.length === 0);
+    }
+    if (filter) filter.setAttribute("aria-expanded", String(Boolean(q) && hits.length > 0));
+
+    // Pre-select the best match so Enter is immediately useful.
+    hits.sort(function (a, b) { return a.rank - b.rank; });
+    select(q && hits.length ? hits[0].card : null);
+  }
+
+  function openSelected(newTab) {
+    var card = selected || visibleCards()[0];
+    if (!card) return;
+    var link = card.querySelector("a.hit");
+    if (!link) return;
+    if (newTab) window.open(link.href, "_blank", "noreferrer");
+    else window.location.href = link.href;
+  }
+
+  function step(delta) {
+    var cards = visibleCards();
+    if (!cards.length) return;
+    var index = cards.indexOf(selected);
+    index = index < 0 ? (delta > 0 ? 0 : cards.length - 1)
+                      : (index + delta + cards.length) % cards.length;
+    select(cards[index]);
   }
 
   if (filter) {
     filter.addEventListener("input", applyFilter);
+
+    filter.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown") { e.preventDefault(); step(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); step(-1); }
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        // Meta/Ctrl matches the browser convention for "open in a new tab".
+        openSelected(e.metaKey || e.ctrlKey);
+      }
+    });
+
     document.addEventListener("keydown", function (e) {
-      if (e.key === "/" && document.activeElement !== filter && !editing) {
+      var typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)
+        || document.activeElement.isContentEditable;
+      if ((e.key === "/" || (e.key === "k" && (e.metaKey || e.ctrlKey))) && !typing && !editing) {
         e.preventDefault();
         filter.focus();
+        filter.select();
       } else if (e.key === "Escape" && document.activeElement === filter) {
         filter.value = "";
         applyFilter();
+        filter.blur();
       }
     });
   }
 
   /* Status refresh ------------------------------------------------------ */
+
+  // The server computes every displayed string, so the polled update and the
+  // server-rendered first paint cannot drift apart in formatting.
+  function paintVitals(v) {
+    var strip = document.getElementById("vitals");
+    if (!strip || !v) return;
+    [["cpu", v.cpu_percent, Math.round(v.cpu_percent || 0) + "%"],
+     ["mem", v.mem_percent, v.mem_text],
+     ["disk", v.disk_percent, v.disk_text],
+     ["up", null, v.uptime_text]].forEach(function (row) {
+      var el = strip.querySelector('[data-vital="' + row[0] + '"]');
+      if (!el) return;
+      var known = row[2] !== "" && row[2] !== null && row[2] !== undefined
+        && !(row[0] === "cpu" && v.cpu_percent === null);
+      el.hidden = !known;
+      if (!known) return;
+      var bar = el.querySelector(".meter i");
+      if (bar && row[1] !== null) bar.style.width = row[1] + "%";
+      el.querySelector(".vital-value").textContent = row[2];
+    });
+  }
 
   function stamp(seconds) {
     if (!seconds) return "never scanned";
@@ -116,6 +246,7 @@
           card.classList.toggle("stopped", !item.running);
         });
         if (statOnline) statOnline.innerHTML = "<strong>" + up + "</strong>/" + data.apps.length + " up";
+        paintVitals(data.vitals);
         updated.textContent = stamp(data.updated);
       })
       .catch(function () { updated.textContent = "refresh failed — server unreachable"; });

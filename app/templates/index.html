@@ -20,7 +20,12 @@
     <span class="sep">·</span>
     <span><strong>{{ public }}</strong> public</span>
   </div>
-  <input id="filter" type="search" placeholder="Filter…" autocomplete="off" spellcheck="false" aria-label="Filter services">
+  <div class="search">
+    <input id="filter" type="search" placeholder="Search…  (press /)" autocomplete="off"
+           spellcheck="false" aria-label="Search services" role="combobox"
+           aria-expanded="false" aria-controls="grid" aria-autocomplete="list">
+    <span id="search-count" class="search-count" aria-live="polite"></span>
+  </div>
   {% if allow_edit %}
   <button id="edit-toggle" type="button" class="icon-btn" aria-pressed="false" title="Edit layout">
     <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
@@ -31,6 +36,34 @@
   </button>
   {% endif %}
 </header>
+
+{% if vitals %}
+{# Host vitals. Rendered server-side so they are present in the first paint,
+   then refreshed in place by the same poll that updates the status dots.
+   Each figure is independently optional -- an unreadable source hides its own
+   chip rather than the strip. #}
+<div id="vitals" class="vitals" aria-label="Host vitals">
+  <span class="vital" data-vital="cpu"{% if vitals.cpu_percent is none %} hidden{% endif %}>
+    <span class="vital-label">CPU</span>
+    <span class="meter"><i class="{{ vitals.cpu_level }}" style="width: {{ vitals.cpu_percent or 0 }}%"></i></span>
+    <span class="vital-value">{{ '%.0f'|format(vitals.cpu_percent or 0) }}%</span>
+  </span>
+  <span class="vital" data-vital="mem"{% if not vitals.mem_total %} hidden{% endif %}>
+    <span class="vital-label">RAM</span>
+    <span class="meter"><i class="{{ vitals.mem_level }}" style="width: {{ vitals.mem_percent }}%"></i></span>
+    <span class="vital-value">{{ vitals.mem_text }}</span>
+  </span>
+  <span class="vital" data-vital="disk"{% if not vitals.disk_total %} hidden{% endif %}>
+    <span class="vital-label">Disk</span>
+    <span class="meter"><i class="{{ vitals.disk_level }}" style="width: {{ vitals.disk_percent }}%"></i></span>
+    <span class="vital-value">{{ vitals.disk_text }}</span>
+  </span>
+  <span class="vital vital-plain" data-vital="up"{% if not vitals.uptime_seconds %} hidden{% endif %}>
+    <span class="vital-label">Up</span>
+    <span class="vital-value">{{ vitals.uptime_text }}</span>
+  </span>
+</div>
+{% endif %}
 
 {% if error %}
 <p class="banner">Discovery error — showing the last known state. {{ error }}</p>

@@ -234,6 +234,39 @@ jobs:
           path.write_text("{ not json")
           assert S.Store(path).categories() == []
 
+          # Host vitals. Every source is optional, so the reading must survive
+          # a machine where none of them can be read.
+          import stats as V
+
+          v = V.Vitals(mem_used=8 * 1024**3, mem_total=32 * 1024**3,
+                       disk_used=90, disk_total=100, uptime_seconds=90000, cpu_percent=12.0)
+          assert v.mem_percent == 25 and v.mem_text == "8.0 / 32.0 GB", v.mem_text
+          assert v.uptime_text == "1d 1h", v.uptime_text
+          # Thresholds exist so a filling disk is noticeable before it is fatal.
+          assert v.disk_level == "hot" and v.cpu_level == ""
+          assert V.Vitals(mem_used=80, mem_total=100).mem_level == "warn"
+          # Unknown sources must render as nothing, not as zero-of-zero.
+          blank = V.Vitals()
+          assert blank.mem_text == "" and blank.uptime_text == "" and blank.mem_percent == 0
+          assert blank.as_dict()["cpu_percent"] is None
+
+          # A rate needs two samples: the first reading must decline to guess.
+          V._prev_cpu = None
+          V.PROC = pathlib.Path(tempfile.mkdtemp())
+          (V.PROC / "stat").write_text("cpu  100 0 100 800 0 0 0 0\n")
+          assert V._cpu_percent() is None, "first sample cannot be a percentage"
+          (V.PROC / "stat").write_text("cpu  200 0 200 1400 0 0 0 0\n")
+          # 800 jiffies elapsed, 600 of them idle -> 25% busy. Held in a
+          # variable because re-reading it in the message would sample again.
+          busy = V._cpu_percent()
+          assert busy == 25.0, busy
+          # A counter reset (reboot) must not produce a negative or absurd value.
+          (V.PROC / "stat").write_text("cpu  1 0 1 1 0 0 0 0\n")
+          assert V._cpu_percent() is None
+          # Missing /proc entirely is a supported state, not a crash.
+          V.PROC = pathlib.Path("/nonexistent-proc")
+          assert V.read_vitals().mem_total is None
+
           import server  # must import with no docker socket present
           assert server.app is not None
 
@@ -244,7 +277,11 @@ jobs:
           assert plain.status_code == 200
           assert b'data-theme' not in plain.data, "theme must follow the OS by default"
 
+          page = plain.data.decode()
+          assert 'id="search-count"' in page, "live search needs its result readout"
+
           embed = client.get("/?embed=1&compact=1&theme=light").data.decode()
+          assert 'id="vitals"' not in embed, "compact must not spend rows on vitals"
           assert 'class="embed compact"' in embed
           assert 'data-theme="light"' in embed
           assert 'id="edit-toggle"' not in embed, "embed must not offer editing"

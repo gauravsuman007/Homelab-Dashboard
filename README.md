@@ -11,14 +11,18 @@ No labels on your containers. No YAML listing your services. No bind mounts, no
 host paths, no API keys. The socket is the only required input, and the compose
 file below is portable as written.
 
+Press `/` and start typing to jump to anything. The header carries the host's
+CPU, memory, disk and uptime — read from `/proc` and the socket, so they need no
+extra mounts either.
+
 Where the guess is wrong, fix it on the page: rename a service, change its icon,
 drag it to another category. That sticks, and everything you *didn't* touch keeps
 updating itself.
 
 > **Scope, so you can rule it out fast.** This is a launcher for a LAN or tailnet:
-> links, categories, and a reachability dot. It has no service widgets (no Sonarr
-> queue counts, no disk graphs), no bookmarks, and no login — access control is
-> the nginx ACL below. If you want live per-service API panels, you want
+> links, categories, a reachability dot, host vitals and a keyboard search. It has
+> no *per-service* API widgets — no Sonarr queue depth, no qBittorrent speeds — no
+> bookmarks, and no login; access control is the nginx ACL below. If you want live per-service API panels, you want
 > [Homepage](https://github.com/gethomepage/homepage) or
 > [Homarr](https://github.com/homarr-labs/homarr), and they are good at it. What
 > those ask for in return is a `homepage.*` label on every container or a tile
@@ -46,14 +50,14 @@ uncomment `build: .` in `docker-compose.yml` and run `up -d --build`.
 The dashboards worth knowing about are all more featureful than this one. They
 also all need to be told what you are running:
 
-| | What it wants from you | Widgets | Editing |
-| --- | --- | --- | --- |
-| **This** | a socket | none | in the page |
-| [Homepage](https://github.com/gethomepage/homepage) | a `homepage.*` label per container, or YAML | ~100 service widgets | edit YAML |
-| [Homarr](https://github.com/homarr-labs/homarr) | place every tile by hand | 40+ integrations | in the page |
-| [Dashy](https://github.com/Lissy93/dashy) | YAML listing every service | widgets, themes | UI editor |
-| [Glance](https://github.com/glanceapp/glance) | YAML | feeds, weather, markets | edit YAML |
-| [Homer](https://github.com/bastienwirtz/homer) | YAML listing every service | none | edit YAML |
+| | What it wants from you | Widgets | Host stats | Editing |
+| --- | --- | --- | --- | --- |
+| **This** | a socket | none | built in | in the page |
+| [Homepage](https://github.com/gethomepage/homepage) | a `homepage.*` label per container, or YAML | ~100 service widgets | a widget | edit YAML |
+| [Homarr](https://github.com/homarr-labs/homarr) | place every tile by hand | 40+ integrations | a widget | in the page |
+| [Dashy](https://github.com/Lissy93/dashy) | YAML listing every service | widgets, themes | a widget | UI editor |
+| [Glance](https://github.com/glanceapp/glance) | YAML | feeds, weather, markets | a widget | edit YAML |
+| [Homer](https://github.com/bastienwirtz/homer) | YAML listing every service | none | none | edit YAML |
 
 So the honest summary: if you want live API panels, use Homepage or Homarr. If
 what you actually want is *the list of what is running here, correct, without
@@ -73,6 +77,7 @@ edit mode exists to correct it, not to build it.
 | What is this service called? | OCI title label → image name → compose service | none |
 | Which category? | built-in table of common self-hosted apps | none |
 | Which icon? | image name → the service's own favicon → letter tile | none |
+| How is the host doing? | `/proc` (not namespaced by Docker) + `docker info` | none |
 
 The two that are worth explaining:
 
@@ -195,6 +200,32 @@ and a `source` of `"config"` (then give `parse_proxy_hosts` a branch) or
 `"labels"` (then add a parser to `LABEL_PARSERS`). Either way it returns
 `ProxyHost` objects and nothing downstream changes.
 
+## Search and vitals
+
+**Search** is a keypress away: `/` or `⌘K` focuses it, `↑`/`↓` walk the results,
+`Enter` opens the top one (`⌘Enter` in a new tab), `Esc` clears. Matching is by
+subsequence rather than substring, so `abs` finds Audiobookshelf and `jf` finds
+Jellyfin — but a literal substring always outranks a scattered match, so `radarr`
+can never be beaten by something whose letters merely happen to line up. It runs
+against the page you already have: no search endpoint, no round trip.
+
+**Vitals** in the header are the host's, not the container's, and they need no
+extra mounts. Docker does not namespace `/proc/stat`, `/proc/meminfo` or
+`/proc/uptime`, so an ordinary unprivileged container reads the machine's real
+numbers directly; CPU count and total memory come from `docker info`, which is
+right even where `/proc` has been virtualised. CPU is a true utilisation figure
+differenced across the refresh interval, not load average wearing a percent sign.
+Meters turn amber past 75% and red past 90%, because a disk quietly filling is
+the failure this strip exists to catch.
+
+Two limits, stated rather than hidden: under **lxcfs** (Proxmox/LXC) or **Docker
+Desktop** those files describe the VM or container rather than the metal; and
+`Disk` is the filesystem Docker's data sits on, measured from `/` inside the
+container, which on a normal install is the host's main disk. Set
+`SHOW_STATS=false` to drop the strip — worth doing if the page is on a screen
+guests can see. It is hidden automatically in `compact` mode, since a Home
+Assistant dashboard already measures the host properly.
+
 ## The nginx snippet
 
 `./nginx/apply.sh` detects the host's address, its LAN subnet (from the
@@ -277,6 +308,7 @@ All optional, set in `docker-compose.yml`:
 | `EDGE_CONFIG_DIR` | unset | read proxy config from a mount instead of the API |
 | `FAVICON_FALLBACK` | `true` | ask services for their own favicon when the icon set misses |
 | `ALLOW_EDIT` | `true` | enable edit mode and the endpoints that write to it |
+| `SHOW_STATS` | `true` | host CPU/RAM/disk/uptime strip in the header |
 | `CUSTOMISATIONS_PATH` | `/config/customisations.json` | where edit-mode changes are stored |
 | `ICON_MISS_TTL_HOURS` | `24` | how long a "no icon found" result is remembered |
 
@@ -458,6 +490,7 @@ cache/                          downloaded icons (created on first run)
 app/server.py                   HTTP surface, refresh loop, icon cache
 app/discovery.py                docker + proxy parsing, host-IP inference
 app/store.py                    customisation store: atomic writes, category rules
+app/stats.py                    host vitals from /proc + docker info, no mounts
 app/templates/index.html
 app/static/{style.css,app.js,favicon.svg}
 nginx/lan-landing.conf.template source for the server block

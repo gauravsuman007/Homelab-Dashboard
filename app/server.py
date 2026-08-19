@@ -39,6 +39,7 @@ import yaml
 from flask import Flask, Response, jsonify, render_template, request
 
 import discovery
+import stats as stats_module
 import store as store_module
 
 logging.basicConfig(
@@ -62,6 +63,10 @@ CUSTOMISATIONS_PATH = os.environ.get("CUSTOMISATIONS_PATH", "/config/customisati
 # The page is unauthenticated, so anyone who can load it can also edit it. Set
 # false to serve a read-only dashboard.
 ALLOW_EDIT = os.environ.get("ALLOW_EDIT", "true").lower() in {"1", "true", "yes"}
+# Host vitals in the header. Read from /proc and the socket -- no extra mounts --
+# so this is on by default; set false for a page that reports nothing about the
+# machine, which some people want on a screen visible to guests.
+SHOW_STATS = os.environ.get("SHOW_STATS", "true").lower() in {"1", "true", "yes"}
 ICON_CACHE_DIR = Path(os.environ.get("ICON_CACHE_DIR", "/cache/icons"))
 REFRESH_SECONDS = float(os.environ.get("REFRESH_SECONDS", "30"))
 PROBE_TIMEOUT = float(os.environ.get("PROBE_TIMEOUT", "2.0"))
@@ -92,6 +97,7 @@ _state: dict = {
     # Address of the host as seen from this container; where services are
     # probed, and where their favicons are fetched from.
     "probe_target": None,
+    "vitals": None,
 }
 
 # Addresses visitors have reached this page by. Each one is, by definition, an
@@ -212,6 +218,10 @@ def _refresh() -> None:
             self_name=me.name if me else "",
         )
         probe_target = _self_gateway(me) or "127.0.0.1"
+        # Read the host's vitals on the same cadence as discovery, so the CPU
+        # sample window is the refresh interval and the page never has to make
+        # a second round trip for them.
+        vitals = stats_module.read_vitals(client) if SHOW_STATS else None
     finally:
         client.close()
 
@@ -250,6 +260,7 @@ def _refresh() -> None:
         )
         _state["host_ips"] = sorted(host_ips)
         _state["probe_target"] = probe_target
+        _state["vitals"] = vitals
 
 
 def _refresh_loop() -> None:
@@ -363,6 +374,9 @@ def index() -> str:
         public=sum(1 for a in items if a["public_urls"]),
         updated=snap["updated"],
         error=snap["error"],
+        # Suppressed when compact: a Home Assistant card has the host's stats
+        # already, from integrations that measure them properly.
+        vitals=snap["vitals"] if SHOW_STATS and not _flag("compact") else None,
     )
 
 
@@ -376,6 +390,7 @@ def api_apps() -> Response:
         "error": snap["error"],
         "edge": snap["edge"],
         "host_ips": snap["host_ips"],
+        "vitals": snap["vitals"].as_dict() if snap.get("vitals") else None,
     })
 
 
