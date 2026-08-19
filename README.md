@@ -2,12 +2,32 @@
 
 [![build](https://github.com/gauravsuman007/Homelab-Dashboard/actions/workflows/build.yml/badge.svg)](https://github.com/gauravsuman007/Homelab-Dashboard/actions/workflows/build.yml)
 
-A single page at **http://\<your-server\>/** listing every service running on the
-box, with a link to each web UI and, where the reverse proxy in front of it has a
-hostname pointing at that service, a link to the public URL too.
+**The dashboard you don't configure.** Point it at a Docker socket and you have a
+page: every running service, named, iconed, grouped, with a link to each web UI
+and — where the reverse proxy in front of it has a hostname pointing at that
+service — a link to the public URL too.
 
-Nothing is hard-coded and nothing needs filling in: the container is portable as
-written. The Docker socket is the only required input.
+No labels on your containers. No YAML listing your services. No bind mounts, no
+host paths, no API keys. The socket is the only required input, and the compose
+file below is portable as written.
+
+Where the guess is wrong, fix it on the page: rename a service, change its icon,
+drag it to another category. That sticks, and everything you *didn't* touch keeps
+updating itself.
+
+> **Scope, so you can rule it out fast.** This is a launcher for a LAN or tailnet:
+> links, categories, and a reachability dot. It has no service widgets (no Sonarr
+> queue counts, no disk graphs), no bookmarks, and no login — access control is
+> the nginx ACL below. If you want live per-service API panels, you want
+> [Homepage](https://github.com/gethomepage/homepage) or
+> [Homarr](https://github.com/homarr-labs/homarr), and they are good at it. What
+> those ask for in return is a `homepage.*` label on every container or a tile
+> placed by hand for every service. This asks for nothing.
+
+![Editing the dashboard: dragging a service into another category, then renaming it](docs/edit-mode.gif)
+
+*Edit mode: drag a service to another category, click it to rename. Both stick;
+everything else keeps deriving itself.*
 
 ```bash
 docker compose up -d     # pull and start
@@ -21,13 +41,32 @@ server, a NAS, or a Raspberry Pi. Update with
 `docker compose pull && docker compose up -d`. To build your own instead,
 uncomment `build: .` in `docker-compose.yml` and run `up -d --build`.
 
+## How it compares
+
+The dashboards worth knowing about are all more featureful than this one. They
+also all need to be told what you are running:
+
+| | What it wants from you | Widgets | Editing |
+| --- | --- | --- | --- |
+| **This** | a socket | none | in the page |
+| [Homepage](https://github.com/gethomepage/homepage) | a `homepage.*` label per container, or YAML | ~100 service widgets | edit YAML |
+| [Homarr](https://github.com/homarr-labs/homarr) | place every tile by hand | 40+ integrations | in the page |
+| [Dashy](https://github.com/Lissy93/dashy) | YAML listing every service | widgets, themes | UI editor |
+| [Glance](https://github.com/glanceapp/glance) | YAML | feeds, weather, markets | edit YAML |
+| [Homer](https://github.com/bastienwirtz/homer) | YAML listing every service | none | edit YAML |
+
+So the honest summary: if you want live API panels, use Homepage or Homarr. If
+what you actually want is *the list of what is running here, correct, without
+maintaining it*, that is the gap this fills. The derivation is the product; the
+edit mode exists to correct it, not to build it.
+
 ## Auto-detection
 
 | Question | Answered by | Configuration needed |
 | --- | --- | --- |
 | What's running, on which ports? | Docker Engine API | none |
 | Which reverse proxy is in front? | container image match | none |
-| Where is its config? | Docker API archive endpoint (`docker cp`) | none |
+| Where is its routing table? | archive endpoint (NPM) or container labels (Traefik, Caddy) | none |
 | Which addresses mean "this box"? | gateways + config inference + Host headers | none |
 | What URL do I link to? | the Host header of each request | none |
 | Which port is the web UI? | published ports, ranked; exposed ports for host-network containers | none |
@@ -115,17 +154,46 @@ before use.
 
 ## Reverse-proxy support
 
-**Nginx Proxy Manager** is supported: its generated blocks use a `set $server` /
-`set $port` idiom that's stable across versions and installs.
+Three proxies are read, and which mechanism applies is decided by whichever one
+is found running — there is nothing to select.
 
-**Plain nginx, Traefik, Caddy** are *not* parsed yet. Behaviour is graceful, not
-broken: you get the full container list with links and status, just no public-URL
-badges. Adding a mode means a parser that follows `include` chains and resolves
-`upstream` blocks (nginx) or reads router labels (Traefik) — the config-fetching
-half already works for any container, since it goes through the Docker API.
+| Proxy | Where its routing table lives | How it is read |
+| --- | --- | --- |
+| **Nginx Proxy Manager** | generated server blocks inside the container | Docker API archive endpoint |
+| **Traefik** | `traefik.http.routers.*` labels on the proxied containers | the container list, already fetched |
+| **caddy-docker-proxy** | `caddy` / `caddy_N` labels on the proxied containers | the container list, already fetched |
 
-To add one, extend `EDGE_KINDS` in `app/discovery.py` with an image marker and
-config path, and give `parse_proxy_hosts` a branch for that syntax.
+For NPM the `set $server` / `set $port` idiom is stable across versions and
+installs. For the label-driven two, the routing table arrives with the container
+list, so it costs no extra API call and cannot go stale between scans — the
+upstream is emitted as the container's own name and internal port, which is
+exactly what the proxy dials.
+
+What's understood, and what isn't:
+
+- **Traefik** — `Host(...)` matchers, including several in one rule and several
+  routers on one container. `PathPrefix` and other matchers are ignored (the root
+  URL is still the right thing to put on a card). HTTPS is taken from `tls`,
+  `tls.*` or an entrypoint named for the secure side, never assumed. The port
+  comes from `loadbalancer.server.port`, falling back to the container's single
+  exposed port. `traefik.enable=false` is honoured. Routers defined in a **file
+  provider** rather than in labels are not seen.
+- **Caddy** — site addresses on `caddy` or `caddy_0`/`caddy_1`, comma-separated
+  lists, and the port from `{{upstreams N}}`. A bare domain is HTTPS (Caddy issues
+  certificates automatically); only an explicit `http://` prefix is not. A
+  hand-written `Caddyfile` is not parsed — only caddy-docker-proxy's labels.
+- **Wildcards and regexp matchers** are skipped in both: there is no single
+  address to link to.
+- **Plain nginx** is not parsed. Behaviour is graceful, not broken: you get the
+  full container list with links and status, just no public-URL badges.
+
+One proxy is used per box — the first image marker matched wins. Running NPM and
+Traefik side by side will surface only one of them.
+
+To add another, extend `EDGE_KINDS` in `app/discovery.py` with an image marker
+and a `source` of `"config"` (then give `parse_proxy_hosts` a branch) or
+`"labels"` (then add a parser to `LABEL_PARSERS`). Either way it returns
+`ProxyHost` objects and nothing downstream changes.
 
 ## The nginx snippet
 
@@ -366,6 +434,17 @@ Only amd64 builds natively; the other three go through QEMU. That is why the
 Dockerfile is two-stage: PyYAML has no wheel for 386 or arm/v7, so it compiles
 from source in a builder stage that carries gcc, and the runtime image copies only
 the finished virtualenv.
+
+## Screenshots
+
+| Dark (default) | Light |
+| --- | --- |
+| [![dark](docs/screenshot.png)](docs/screenshot.png) | [![light](docs/light.png)](docs/light.png) |
+
+The palette follows the device unless `?theme=` pins it. Embedded and compact,
+at phone width — this is what the Home Assistant card renders:
+
+<img src="docs/mobile.png" alt="The dashboard embedded at phone width, two columns" width="300">
 
 ## Files
 

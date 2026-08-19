@@ -8,11 +8,14 @@ Three questions have to be answered, and each has its own source:
 1. *What is running?* -- the Docker Engine API over the mounted socket. Also the
    authority on published ports and network aliases.
 
-2. *What is public?* -- the reverse proxy's own generated config. The edge
-   container is found by image name, and its config is read **through the Docker
-   API's archive endpoint** (the same mechanism as `docker cp`), so no bind mount
-   and no knowledge of host paths is needed. This also works when the config
-   lives in a named volume rather than on the host filesystem.
+2. *What is public?* -- the reverse proxy's own routing table. The edge
+   container is found by image name, and where that table lives depends on the
+   proxy. Nginx Proxy Manager generates server blocks, which are read **through
+   the Docker API's archive endpoint** (the same mechanism as `docker cp`), so
+   no bind mount and no knowledge of host paths is needed -- this works even
+   when the config sits in a named volume. Traefik and caddy-docker-proxy
+   instead keep the table in labels on the proxied containers, which have
+   already been fetched, so there is nothing extra to read at all.
 
 3. *Which addresses mean "this box"?* -- needed to tell "this proxy host points
    at a service here" from "it points at the NAS". Inferred from the docker
@@ -62,12 +65,39 @@ INFRA_IMAGE_MARKERS = (
 # `admin_port` is the container port of its own UI: the edge publishes the ports
 # it proxies *for other services* (80/443), so without this its card would link
 # to the proxy itself rather than to its admin panel.
+# ``source`` says where the routing table lives, and it differs by proxy:
+#
+# * "config" -- the proxy writes generated server blocks into its own filesystem
+#   (NPM), so they are read out of the container at ``config_path``.
+# * "labels" -- the routing table *is* the labels on the proxied containers
+#   (Traefik, caddy-docker-proxy), so nothing has to be read from the proxy at
+#   all; the data already arrived with the container list.
+#
+# Order matters: the first marker found in an image reference wins.
 EDGE_KINDS = (
     {
         "marker": "nginx-proxy-manager",
         "kind": "npm",
+        "source": "config",
         "config_path": "/data/nginx/proxy_host",
         "admin_port": 81,
+    },
+    {
+        "marker": "traefik",
+        "kind": "traefik",
+        "source": "labels",
+        "config_path": "",
+        # Traefik's dashboard, when it is enabled at all. 80/443 are what it
+        # serves for everything else.
+        "admin_port": 8080,
+    },
+    {
+        "marker": "caddy",
+        "kind": "caddy",
+        "source": "labels",
+        "config_path": "",
+        # Caddy exposes an admin *API* on 2019, not a UI worth linking to.
+        "admin_port": None,
     },
 )
 
@@ -98,8 +128,11 @@ class Edge:
 
     container_name: str
     kind: str
-    config_path: str
     image: str
+    # "config" (read generated server blocks out of the proxy) or "labels"
+    # (the routing table is on the proxied containers themselves).
+    source: str = "config"
+    config_path: str = ""
     admin_port: int | None = None
 
 
@@ -191,8 +224,9 @@ def find_edge(client: docker.DockerClient) -> Edge | None:
                 return Edge(
                     container_name=container.name,
                     kind=kind["kind"],
-                    config_path=kind["config_path"],
                     image=image,
+                    source=kind.get("source", "config"),
+                    config_path=kind.get("config_path", ""),
                     admin_port=kind.get("admin_port"),
                 )
     return None
@@ -277,6 +311,185 @@ def parse_proxy_hosts(texts: dict[str, str]) -> list[ProxyHost]:
         for domain in names.group(1).split():
             hosts.append(ProxyHost(domain, upstream.group(1).strip(), int(port.group(1)), https))
     return hosts
+
+
+# --------------------------------------------------------------------------
+# Label-driven proxies (Traefik, caddy-docker-proxy)
+# --------------------------------------------------------------------------
+#
+# These have no generated config to read: a container declares its own public
+# hostname in its labels and the proxy watches the daemon for changes. That is
+# convenient here, because the labels arrived with the container list -- the
+# routing table costs no extra API call and cannot go stale between scans.
+#
+# The upstream is emitted as the *container name and internal port*, which is
+# what the proxy itself dials. ``_match_public`` already resolves that shape via
+# the alias path, so nothing downstream needs to know which proxy was found.
+
+_RE_TRAEFIK_ROUTER = re.compile(r"^traefik\.http\.routers\.([^.]+)\.(.+)$", re.I)
+_RE_TRAEFIK_PORT = re.compile(
+    r"^traefik\.http\.services\.([^.]+)\.loadbalancer\.server\.port$", re.I)
+# Host(`a.com`) -- backticks are Traefik's own quoting, but single and double
+# quotes appear in hand-written compose files often enough to accept both.
+_RE_HOST_RULE = re.compile(r"Host(?:SNI)?\(([^)]*)\)", re.I)
+_RE_QUOTED = re.compile(r"[`'\"]([^`'\"]+)[`'\"]")
+
+
+def _sole_web_port(facts: ContainerFacts) -> int | None:
+    """The container's port, when it has exactly one that could serve HTTP.
+
+    Both Traefik and Caddy make the port optional and fall back to the single
+    exposed one. Guessing beyond that is worse than declining: a wrong port
+    produces a card that looks right and 502s.
+    """
+    usable = [p for p in facts.internal_ports if p not in NON_HTTP_PORTS]
+    return usable[0] if len(usable) == 1 else None
+
+
+def _host_rule_domains(rule: str) -> list[str]:
+    """Domains named by a Traefik router rule.
+
+    Only ``Host(...)`` matchers yield a linkable name. A rule may hold several
+    (``Host(`a`) || Host(`b`)``, or ``Host(`a`, `b`)``), and may combine them
+    with ``PathPrefix`` and friends, which are ignored -- the root URL is still
+    the right thing to put on a card.
+    """
+    domains: list[str] = []
+    for match in _RE_HOST_RULE.finditer(rule or ""):
+        for domain in _RE_QUOTED.findall(match.group(1)):
+            domain = domain.strip()
+            # A regexp or wildcard matcher has no single address to link to.
+            if domain and not domain.startswith("*") and "{" not in domain:
+                domains.append(domain)
+    return domains
+
+
+def _traefik_https(spec: dict[str, str]) -> bool:
+    """Whether a router serves TLS, from its own keys alone.
+
+    ``tls=true`` and any ``tls.*`` sub-key both mean yes; so does an entrypoint
+    named for the HTTPS side. Assuming HTTPS by default would be wrong -- plenty
+    of tailnet-only routers are plain HTTP, and a bad scheme is a broken link.
+    """
+    for key, value in spec.items():
+        key = key.lower()
+        if key.startswith("tls."):
+            return True
+        if key == "tls" and str(value).strip().lower() not in {"false", "0", ""}:
+            return True
+        if key in {"entrypoints", "entrypoint"}:
+            entries = str(value).lower()
+            if any(token in entries for token in ("websecure", "https", "443")):
+                return True
+    return False
+
+
+def parse_traefik_labels(containers: list[ContainerFacts]) -> list[ProxyHost]:
+    """Read Traefik's dynamic configuration off the containers it routes to.
+
+    A container opts out with ``traefik.enable=false``; the opposite default
+    (``exposedByDefault=false`` in Traefik's static config) cannot be seen from
+    here, but a container with no router labels produces no hosts anyway, so the
+    result is the same.
+    """
+    hosts: list[ProxyHost] = []
+    for facts in containers:
+        labels = facts.labels or {}
+        if str(labels.get("traefik.enable", "true")).strip().lower() in {"false", "0"}:
+            continue
+
+        ports: dict[str, int] = {}
+        routers: dict[str, dict[str, str]] = defaultdict(dict)
+        for key, value in labels.items():
+            port_match = _RE_TRAEFIK_PORT.match(key)
+            if port_match:
+                try:
+                    ports[port_match.group(1)] = int(str(value).strip())
+                except ValueError:
+                    log.debug("%s: unreadable traefik port %r", facts.name, value)
+                continue
+            router_match = _RE_TRAEFIK_ROUTER.match(key)
+            if router_match:
+                routers[router_match.group(1)][router_match.group(2)] = str(value)
+        if not routers:
+            continue
+
+        # With one service declared, every router on the container uses it --
+        # naming it explicitly is only needed when there are several.
+        fallback = next(iter(ports.values())) if len(ports) == 1 else None
+        for name, spec in routers.items():
+            port = ports.get(spec.get("service", name), fallback)
+            if port is None:
+                port = _sole_web_port(facts)
+            if port is None:
+                log.debug("%s: traefik router %s has no resolvable port", facts.name, name)
+                continue
+            https = _traefik_https(spec)
+            for domain in _host_rule_domains(spec.get("rule", "")):
+                hosts.append(ProxyHost(domain, facts.name, port, https))
+    return hosts
+
+
+# caddy-docker-proxy keys a site block on `caddy`, or `caddy_0`, `caddy_1`, ...
+# when one container serves several. Directives hang off that same prefix.
+_RE_CADDY_SITE = re.compile(r"^caddy(?:_\d+)?$", re.I)
+_RE_CADDY_UPSTREAM = re.compile(r"\{\{\s*upstreams(?:\s+[a-z]+)?\s+(\d+)\s*\}\}", re.I)
+
+
+def parse_caddy_labels(containers: list[ContainerFacts]) -> list[ProxyHost]:
+    """Read caddy-docker-proxy site blocks off the containers they serve.
+
+    The site address carries the scheme: Caddy issues certificates
+    automatically, so a bare domain is HTTPS and only an explicit ``http://``
+    prefix (or a ``:80`` port) is not.
+    """
+    hosts: list[ProxyHost] = []
+    for facts in containers:
+        labels = facts.labels or {}
+        for key, value in labels.items():
+            if not _RE_CADDY_SITE.match(key):
+                continue
+            upstream = _RE_CADDY_UPSTREAM.search(str(labels.get(f"{key}.reverse_proxy", "")))
+            port = int(upstream.group(1)) if upstream else _sole_web_port(facts)
+            if port is None:
+                log.debug("%s: caddy site %s has no resolvable port", facts.name, key)
+                continue
+            for raw in str(value).split(","):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                https = not raw.lower().startswith("http://")
+                domain = raw.split("://", 1)[-1].split("/")[0].strip()
+                if domain and not domain.startswith("*"):
+                    hosts.append(ProxyHost(domain, facts.name, port, https))
+    return hosts
+
+
+LABEL_PARSERS = {
+    "traefik": parse_traefik_labels,
+    "caddy": parse_caddy_labels,
+}
+
+
+def proxy_hosts_for(
+    client: docker.DockerClient,
+    edge: Edge | None,
+    containers: list[ContainerFacts],
+    config_dir: str = "",
+) -> list[ProxyHost]:
+    """The public hostname table, however this box's proxy happens to store it.
+
+    ``config_dir`` is the manual escape hatch and wins when set. With no edge at
+    all the answer is an empty list, which is correct: the page then shows LAN
+    links only.
+    """
+    if config_dir:
+        return parse_proxy_hosts(read_config_dir(config_dir))
+    if edge is None:
+        return []
+    if edge.source == "labels":
+        return LABEL_PARSERS[edge.kind](containers)
+    return parse_proxy_hosts(fetch_config_texts(client, edge))
 
 
 # --------------------------------------------------------------------------

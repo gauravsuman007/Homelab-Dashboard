@@ -191,13 +191,7 @@ def _refresh() -> None:
         containers = discovery.list_containers(client, INCLUDE_STOPPED)
 
         edge = discovery.find_edge(client)
-        if CONFIG_DIR:
-            texts = discovery.read_config_dir(CONFIG_DIR)
-        elif edge:
-            texts = discovery.fetch_config_texts(client, edge)
-        else:
-            texts = {}
-        proxy_hosts = discovery.parse_proxy_hosts(texts)
+        proxy_hosts = discovery.proxy_hosts_for(client, edge, containers, CONFIG_DIR)
 
         published = {port for facts in containers for port in facts.host_ports}
         host_ips = discovery.infer_host_ips(

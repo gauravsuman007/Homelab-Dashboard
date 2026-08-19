@@ -122,6 +122,62 @@ jobs:
           discovery._disambiguate(pair, set())
           assert {a.name for a in pair} == {"Decypharr (Local)", "Decypharr (Torbox)"}, [a.name for a in pair]
 
+          # Traefik and Caddy keep their routing table in labels on the
+          # proxied containers, so these parsers stand in for a whole proxy.
+          traefik = discovery.parse_traefik_labels([
+              facts(name="grafana", internal_ports=[3000], labels={
+                  "traefik.enable": "true",
+                  "traefik.http.routers.graf.rule": "Host(`graf.example.com`)",
+                  "traefik.http.routers.graf.entrypoints": "websecure",
+                  "traefik.http.routers.graf.tls.certresolver": "le",
+                  "traefik.http.services.graf.loadbalancer.server.port": "3000",
+              }),
+              # Several hosts in one rule, plain HTTP, and the port left to the
+              # container's single exposed one.
+              facts(name="wiki", internal_ports=[8080], labels={
+                  "traefik.http.routers.w.rule": "Host(`a.example.com`, `b.example.com`) && PathPrefix(`/x`)",
+              }),
+              facts(name="secret", internal_ports=[9000], labels={
+                  "traefik.enable": "false",
+                  "traefik.http.routers.s.rule": "Host(`no.example.com`)",
+              }),
+          ])
+          got = {(h.domain, h.upstream_host, h.upstream_port, h.https) for h in traefik}
+          assert got == {
+              ("graf.example.com", "grafana", 3000, True),
+              ("a.example.com", "wiki", 8080, False),
+              ("b.example.com", "wiki", 8080, False),
+          }, got
+
+          # A wildcard or regexp matcher has no single address to link to.
+          assert discovery._host_rule_domains("Host(`*.example.com`)") == []
+          assert discovery._host_rule_domains("PathPrefix(`/only`)") == []
+
+          caddy = discovery.parse_caddy_labels([
+              facts(name="app", internal_ports=[5000], labels={
+                  "caddy": "app.example.com",
+                  "caddy.reverse_proxy": "{{upstreams 5000}}",
+              }),
+              # Two site blocks on one container, one deliberately plain HTTP.
+              facts(name="dual", internal_ports=[8000], labels={
+                  "caddy_0": "one.example.com, two.example.com",
+                  "caddy_0.reverse_proxy": "{{upstreams 8000}}",
+                  "caddy_1": "http://plain.example.com",
+                  "caddy_1.reverse_proxy": "{{upstreams 8000}}",
+              }),
+          ])
+          got = {(h.domain, h.upstream_host, h.upstream_port, h.https) for h in caddy}
+          assert got == {
+              ("app.example.com", "app", 5000, True),
+              ("one.example.com", "dual", 8000, True),
+              ("two.example.com", "dual", 8000, True),
+              ("plain.example.com", "dual", 8000, False),
+          }, got
+
+          # An unrecognised proxy, or none at all, must degrade to LAN links
+          # rather than raising.
+          assert discovery.proxy_hosts_for(None, None, []) == []
+
           # Tailscale CGNAT must be accepted even though modern Python does not
           # count 100.64.0.0/10 as private.
           assert discovery.acceptable_request_host("100.66.174.116")

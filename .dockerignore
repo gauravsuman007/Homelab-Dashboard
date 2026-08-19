@@ -8,6 +8,7 @@ config
 nginx
 docker-compose*.yml
 README.md
+docs
 __pycache__
 **/__pycache__
 *.py[cod]
