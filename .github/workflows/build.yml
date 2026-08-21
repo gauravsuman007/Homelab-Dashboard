@@ -386,8 +386,12 @@ jobs:
 
           page = plain.data.decode()
           assert 'id="search-count"' in page, "live search needs its result readout"
-          assert 'id="theme-toggle"' in page, "the palette toggle is not an edit-mode feature"
           assert 'id="appearance-open"' in page, "accent/background must not require entering edit mode first"
+          assert 'darkreader-lock' in page, "the page has its own dark theme; extensions must not re-derive it"
+          # Theme lives in the appearance sheet, so the header does not carry a
+          # second control for it -- except on a read-only page, which has no
+          # sheet and would otherwise have no way to flip the palette at all.
+          assert 'id="theme-toggle"' not in page, "the sheet already has theme"
           assert 'id="stats-toggle"' in page, "stats must be switchable without editing a compose file"
           assert "<style>" not in page, "the default look must add no inline style"
 
@@ -407,6 +411,15 @@ jobs:
           finally:
               server.store.appearance = saved
           assert server._stats_on() is True
+
+          readonly = server.ALLOW_EDIT
+          server.ALLOW_EDIT = False
+          try:
+              bare = client.get("/").data.decode()
+              assert 'id="appearance-open"' not in bare
+              assert 'id="theme-toggle"' in bare, "a read-only page still needs a way to switch theme"
+          finally:
+              server.ALLOW_EDIT = readonly
 
           embed = client.get("/?embed=1&compact=1&theme=light").data.decode()
           assert 'id="vitals"' not in embed, "compact must not spend rows on vitals"

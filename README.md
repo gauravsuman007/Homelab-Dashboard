@@ -205,11 +205,15 @@ and a `source` of `"config"` (then give `parse_proxy_hosts` a branch) or
 
 ## Theming
 
-A palette toggle sits in the header — it cycles **follow device → dark → light**,
-and "follow device" is the default rather than a stored colour, so a new visitor
+**Follow device** is the default rather than a stored colour, so a new visitor
 gets their own system preference instead of whatever the last person picked.
 
-Everything else lives behind the palette icon in the header — a click away, no need to enter edit mode first:
+Everything lives behind the palette icon in the header — a click away, no need to
+enter edit mode first:
+
+- **Theme** — follow device, dark, or light. (A read-only page, which has no
+  appearance sheet, keeps a plain sun button in the header instead; anywhere the
+  sheet exists, a second header control for one row of it is just clutter.)
 
 - **Accent** — eight swatches or any colour you like. It drives links, focus
   rings, meters and the generated backgrounds, because they all read the same
@@ -235,6 +239,14 @@ host page.
 Precedence, in full:
 
     ?theme=  >  stored preference  >  the device's own setting
+
+One thing worth knowing if you use **Dark Reader** or a similar extension: the
+page carries `<meta name="darkreader-lock">`, the opt-out those extensions
+document for sites that already have a real dark theme. Without it the extension
+re-derives every colour from scratch — it cannot follow the `var()` chain the
+accent swatches use, so they render as grey discs, and the accent everywhere
+else is replaced with a colour nobody chose. This page follows your device's
+light/dark setting on its own, so there is nothing for the extension to add.
 
 Two notes on how this is built. The default page emits **no inline style at all**;
 only values that differ from the stylesheet's own are written into a `<style>`
