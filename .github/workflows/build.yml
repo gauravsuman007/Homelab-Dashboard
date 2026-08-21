@@ -328,6 +328,19 @@ jobs:
           look.set_appearance({"background_dim": 500})
           assert look.appearance()["background_dim"] == 90
 
+          # The stats switch. False has to survive the clear-to-reset rule that
+          # treats an empty value as "back to the default" -- off is a choice,
+          # not an absence, and losing it would silently start measuring again.
+          assert look.appearance()["stats"] is True, "stats are on unless turned off"
+          look.set_appearance({"stats": False})
+          assert look.appearance()["stats"] is False
+          assert look.snapshot()["appearance"]["stats"] is False, "off must reach the disk"
+          look.set_appearance({"stats": "false"})
+          assert look.appearance()["stats"] is False, "a curl sending a string means it too"
+          look.set_appearance({"stats": True})
+          assert look.appearance()["stats"] is True
+          assert "stats" not in look.snapshot()["appearance"], "the default leaves no residue"
+
           # Host vitals. Every source is optional, so the reading must survive
           # a machine where none of them can be read.
           import stats as V
@@ -375,7 +388,25 @@ jobs:
           assert 'id="search-count"' in page, "live search needs its result readout"
           assert 'id="theme-toggle"' in page, "the palette toggle is not an edit-mode feature"
           assert 'id="appearance-open"' in page, "accent/background must not require entering edit mode first"
+          assert 'id="stats-toggle"' in page, "stats must be switchable without editing a compose file"
           assert "<style>" not in page, "the default look must add no inline style"
+
+          # Switching stats off must stop the collection, not just the markup:
+          # _stats_on is what the refresh loop consults before it asks the
+          # daemon for anything, so it is the single fact both sides read.
+          # (The store's own file lives at /config here, which the runner
+          # cannot write, so the stored flag is stood in for rather than set.)
+          assert server._stats_on() is True
+          saved = server.store.appearance
+          server.store.appearance = lambda: {**saved(), "stats": False}
+          try:
+              assert server._stats_on() is False, "the header switch must reach the refresh loop"
+              off = client.get("/").data.decode()
+              assert 'id="vitals"' not in off, "stats off must render no vitals strip"
+              assert 'id="stats-toggle"' in off, "the way back on must stay on the page"
+          finally:
+              server.store.appearance = saved
+          assert server._stats_on() is True
 
           embed = client.get("/?embed=1&compact=1&theme=light").data.decode()
           assert 'id="vitals"' not in embed, "compact must not spend rows on vitals"

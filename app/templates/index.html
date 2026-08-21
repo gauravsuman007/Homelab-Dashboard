@@ -42,6 +42,20 @@
            aria-expanded="false" aria-controls="grid" aria-autocomplete="list">
     <span id="search-count" class="search-count" aria-live="polite"></span>
   </div>
+  {% if can_toggle_stats %}
+  {# Not just a display toggle: with this off the refresh loop stops asking the
+     daemon for stats at all, so the switch is worth having in the header
+     rather than buried in the appearance sheet. #}
+  <button id="stats-toggle" type="button" class="icon-btn" aria-pressed="{{ 'true' if stats_on else 'false' }}"
+          title="{{ 'Stats on: click to stop measuring' if stats_on else 'Stats off: click to measure again' }}"
+          aria-label="Show or hide stats">
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+      <path d="M3 16.5h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M5.5 13.5v-3M10 13.5v-7M14.5 13.5v-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      {% if not stats_on %}<path d="M3.5 3.5l13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>{% endif %}
+    </svg>
+  </button>
+  {% endif %}
   <button id="theme-toggle" type="button" class="icon-btn" title="Theme: follows this device"
           aria-label="Change theme">
     <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
@@ -253,7 +267,8 @@
       <button type="button" data-value="#a855f7" class="swatch" style="--s: #a855f7"></button>
       <button type="button" data-value="#06b6d4" class="swatch" style="--s: #06b6d4"></button>
       <button type="button" data-value="#ec4899" class="swatch" style="--s: #ec4899"></button>
-      <input type="color" id="a-accent-custom" title="Custom accent" value="#5b8cff">
+      <input type="color" id="a-accent-custom" title="Custom accent" value="#5b8cff"
+             aria-label="Custom accent colour">
     </div>
 
     <label>Background</label>

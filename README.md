@@ -213,7 +213,9 @@ Everything else lives behind the palette icon in the header — a click away, no
 
 - **Accent** — eight swatches or any colour you like. It drives links, focus
   rings, meters and the generated backgrounds, because they all read the same
-  custom property.
+  custom property. Because it is exactly one custom property, an accent is
+  repainted live: the sheet stays open while you try colours against the real
+  page, rather than reloading out from under you on every click.
 - **Background** — `plain`, `glow` (a wash of the accent), `grid` (a blueprint
   grid), `mesh` (soft colour fields), or an image of your own. The first four are
   drawn in CSS, so they ship no assets, scale to any screen, and invert with the
@@ -262,9 +264,18 @@ Two limits, stated rather than hidden: under **lxcfs** (Proxmox/LXC) or **Docker
 Desktop** those files describe the VM or container rather than the metal; and
 `Disk` is the filesystem Docker's data sits on, measured from `/` inside the
 container, which on a normal install is the host's main disk. Set
-`SHOW_STATS=false` to drop the strip — worth doing if the page is on a screen
-guests can see. It is hidden automatically in `compact` mode, since a Home
-Assistant dashboard already measures the host properly.
+There is a **switch for this in the header** — the small bar-chart button, next
+to the palette. It is a real off switch, not a CSS one: with stats off the
+refresh loop stops asking the daemon for vitals, per-container memory and disk
+usage entirely, rather than measuring everything and then hiding it. Like the
+rest of the appearance settings it is shared and stored, so a dashboard turned
+quiet on a laptop is quiet on the wall tablet too.
+
+`SHOW_STATS=false` is the deployment's version of the same decision, and it wins:
+with it set there is no header button either, so a page put up somewhere guests
+can see it cannot be talked back into reporting on the machine. Stats are also
+hidden automatically in `compact` mode, since a Home Assistant dashboard already
+measures the host properly.
 
 ## Per-container memory and storage
 
@@ -388,7 +399,7 @@ All optional, set in `docker-compose.yml`:
 | `EDGE_CONFIG_DIR` | unset | read proxy config from a mount instead of the API |
 | `FAVICON_FALLBACK` | `true` | ask services for their own favicon when the icon set misses |
 | `ALLOW_EDIT` | `true` | enable edit mode and the endpoints that write to it |
-| `SHOW_STATS` | `true` | host vitals strip, and per-container memory/storage |
+| `SHOW_STATS` | `true` | allow stats at all: the vitals strip, per-container memory/storage, and the header switch for them |
 | `MEASURE_BIND_MOUNTS` | `false` | size bind mounts via a short-lived container per path — see "Per-container memory and storage" |
 | `MOUNT_SCAN_SECONDS` | `1800` | how often bind mounts are rescanned, when enabled |
 | `CUSTOMISATIONS_PATH` | `/config/customisations.json` | where edit-mode changes are stored |

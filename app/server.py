@@ -67,6 +67,19 @@ ALLOW_EDIT = os.environ.get("ALLOW_EDIT", "true").lower() in {"1", "true", "yes"
 # so this is on by default; set false for a page that reports nothing about the
 # machine, which some people want on a screen visible to guests.
 SHOW_STATS = os.environ.get("SHOW_STATS", "true").lower() in {"1", "true", "yes"}
+
+
+def _stats_on() -> bool:
+    """Whether to collect stats at all this cycle.
+
+    Two switches, deliberately: SHOW_STATS is the deployment's decision and
+    cannot be undone from the page, while the header toggle is the household's
+    and is stored with the rest of the shared look. Both are consulted here
+    rather than only at render time, so turning stats off in the header really
+    does stop the daemon being asked for them -- an off switch that still did
+    the work and threw it away would be a lie.
+    """
+    return SHOW_STATS and bool(store.appearance().get("stats", True))
 # Per-container memory and the writable-layer/volume half of storage cost
 # nothing beyond what discovery already reads, so they are on by default with
 # the rest of the vitals. Bind-mount sizes are the exception -- see
@@ -238,9 +251,10 @@ def _refresh() -> None:
         # Read the host's vitals on the same cadence as discovery, so the CPU
         # sample window is the refresh interval and the page never has to make
         # a second round trip for them.
-        vitals = stats_module.read_vitals(client) if SHOW_STATS else None
+        stats_on = _stats_on()
+        vitals = stats_module.read_vitals(client) if stats_on else None
 
-        if SHOW_STATS:
+        if stats_on:
             # One call covers every container's writable layer and every
             # volume's size -- see stats.read_disk_usage for why this is cheap
             # enough to do unconditionally on the normal refresh cadence.
@@ -397,6 +411,7 @@ def index() -> str:
 
     embed = _flag("embed")
     look = store.appearance()
+    stats_on = _stats_on()
     # Precedence: the query parameter (an embedder pinning a palette to match
     # its host page) beats the stored preference, which beats the device's own
     # setting. "system" is expressed as *no* attribute, which is what lets the
@@ -436,11 +451,18 @@ def index() -> str:
         error=snap["error"],
         # Suppressed when compact: a Home Assistant card has the host's stats
         # already, from integrations that measure them properly.
-        vitals=snap["vitals"] if SHOW_STATS and not _flag("compact") else None,
+        # Also gated on stats_on rather than only on what the snapshot holds:
+        # the switch takes effect on this render, not whenever the refresh
+        # loop next comes round and clears the numbers it took last time.
+        vitals=snap["vitals"] if stats_on and not _flag("compact") else None,
+        # The button itself only exists where the deployment allows stats at
+        # all; with SHOW_STATS off there is nothing for it to turn back on.
+        can_toggle_stats=SHOW_STATS and ALLOW_EDIT and not embed,
+        stats_on=stats_on,
         # Only worth mentioning when it would otherwise look like a bug: cards
         # with an asterisked storage figure and no explanation in sight.
         unmeasured_binds=(
-            SHOW_STATS and not MEASURE_BIND_MOUNTS
+            stats_on and not MEASURE_BIND_MOUNTS
             and any((a.get("storage") or {}).get("bind_count") for a in items)
         ),
     )
@@ -677,7 +699,7 @@ def api_appearance() -> Response | tuple:
 
     payload = request.get_json(silent=True) or {}
     fields = {k: payload[k] for k in
-              ("theme", "accent", "background", "background_dim") if k in payload}
+              ("theme", "accent", "background", "background_dim", "stats") if k in payload}
 
     # An image is fetched and cached server-side, exactly like a custom icon,
     # so the page never loads from a third-party host and no URL supplied in
@@ -695,6 +717,10 @@ def api_appearance() -> Response | tuple:
         store.set_appearance(fields)
     except store_module.ValidationError as exc:
         return jsonify({"error": str(exc)}), 400
+    if "stats" in fields:
+        # Switching stats back on should fill the strip in on the next paint,
+        # not on the next scheduled refresh a minute later.
+        _refresh_now.set()
     return jsonify({"ok": True, "appearance": store.appearance()})
 
 
@@ -956,7 +982,9 @@ def _mount_scan_loop() -> None:
         with _state_lock:
             apps = list(_state["apps"])
         paths = sorted({m["source"] for a in apps for m in a.mounts if m["type"] == "bind"})
-        if paths:
+        # Stats switched off in the header means no scanning either: this is
+        # the most expensive thing the app does, and nothing would read it.
+        if paths and _stats_on():
             client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
             try:
                 for path in paths:

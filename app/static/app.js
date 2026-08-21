@@ -301,7 +301,7 @@
   var THEMES = ["system", "dark", "light"];
   var themeToggle = document.getElementById("theme-toggle");
   var appearanceDialog = document.getElementById("appearance");
-  var look = { theme: "system", accent: "", background: "plain", background_dim: 55 };
+  var look = { theme: "system", accent: "", background: "plain", background_dim: 55, stats: true };
 
   function applyTheme(name) {
     if (name === "system") document.documentElement.removeAttribute("data-theme");
@@ -338,15 +338,61 @@
     });
   }
 
+  /* Stats toggle --------------------------------------------------------
+   *
+   * Turning stats off is a real off switch, not a CSS one: the server stops
+   * asking the daemon for vitals, per-container memory and disk usage
+   * entirely. That is also why this reloads rather than hiding the strip --
+   * the numbers are server-rendered, and on the way back on there is nothing
+   * to show until a refresh has actually measured something. */
+  var statsToggle = document.getElementById("stats-toggle");
+  if (statsToggle) {
+    statsToggle.addEventListener("click", function () {
+      var next = statsToggle.getAttribute("aria-pressed") !== "true";
+      statsToggle.disabled = true;
+      statsToggle.title = next ? "Measuring…" : "Stopping…";
+      saveLook({ stats: next }, function (err) {
+        statsToggle.disabled = false;
+        toast(err.message);
+      }).then(function () {
+        if (!next) { window.location.reload(); return; }
+        // Wait for the refresh the server just kicked off, so the page comes
+        // back with numbers on it instead of an empty strip.
+        var tries = 0;
+        (function waitForMeasurement() {
+          fetch("/api/apps", { cache: "no-store" })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data.vitals || ++tries > 12) window.location.reload();
+              else setTimeout(waitForMeasurement, 700);
+            })
+            .catch(function () { window.location.reload(); });
+        })();
+      }).catch(function () {});
+    });
+  }
+
   function markChoice(container, value) {
     container.querySelectorAll("button").forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.dataset.value === value));
     });
   }
 
+  function applyAccent(value) {
+    if (value) document.documentElement.style.setProperty("--accent", value);
+    else document.documentElement.style.removeProperty("--accent");
+  }
+
   function paintAppearanceForm() {
     markChoice(document.getElementById("a-theme"), look.theme);
     markChoice(document.getElementById("a-accent"), look.accent || "");
+    // A custom accent matches no swatch, so without this the sheet reopened
+    // showing nothing selected and the picker still offering its factory
+    // blue -- as if the colour in front of you had not been chosen at all.
+    var custom = document.getElementById("a-accent-custom");
+    var preset = document.querySelector('#a-accent .swatch[data-value="' + (look.accent || "") + '"]');
+    if (look.accent) custom.value = look.accent;
+    custom.setAttribute("aria-pressed", String(Boolean(look.accent) && !preset));
     markChoice(document.getElementById("a-background"), look.background);
     var dim = document.getElementById("a-dim");
     dim.value = look.background_dim;
@@ -374,14 +420,26 @@
     });
     document.getElementById("a-accent").addEventListener("click", function (e) {
       var b = e.target.closest("button[data-value]");
-      if (b) attempt({ accent: b.dataset.value });
+      if (!b) return;
+      // Accent is the one part of the look that is a single CSS variable, so
+      // it can be repainted in place. No reload means the sheet stays open
+      // and you can try colours against the real page.
+      applyAccent(b.dataset.value);
+      saveAccent(b.dataset.value);
     });
     document.getElementById("a-background").addEventListener("click", function (e) {
       var b = e.target.closest("button[data-value]");
       if (b) attempt({ background: b.dataset.value });
     });
-    document.getElementById("a-accent-custom").addEventListener("change", function (e) {
-      attempt({ accent: e.target.value });
+    var custom = document.getElementById("a-accent-custom");
+    // Preview while dragging through the picker, save when it settles. The
+    // blur is what dismisses the native picker panel, which otherwise sits
+    // there over the page after a colour has already been chosen.
+    custom.addEventListener("input", function (e) { applyAccent(e.target.value); });
+    custom.addEventListener("change", function (e) {
+      e.target.blur();
+      applyAccent(e.target.value);
+      saveAccent(e.target.value);
     });
     document.getElementById("a-bg-url").addEventListener("change", function (e) {
       if (e.target.value.trim()) attempt({ background_image_url: e.target.value.trim() });
@@ -393,11 +451,24 @@
     });
     dim.addEventListener("change", function () { attempt({ background_dim: Number(dim.value) }); });
 
+    function saveAccent(value) {
+      error.hidden = true;
+      saveLook({ accent: value }, function (err) {
+        applyAccent(look.accent);  // put the page back if the server said no
+        error.textContent = err.message;
+        error.hidden = false;
+      }).then(function () { paintAppearanceForm(); }).catch(function () {});
+    }
+
     document.getElementById("appearance-reset").addEventListener("click", function () {
       attempt({ accent: "", background: "plain", theme: "system", background_dim: 55 });
     });
     document.getElementById("appearance-close").addEventListener("click", function () {
       appearanceDialog.close();
+    });
+
+    appearanceDialog.addEventListener("click", function (e) {
+      if (e.target === appearanceDialog) appearanceDialog.close();
     });
 
     var open = document.getElementById("appearance-open");

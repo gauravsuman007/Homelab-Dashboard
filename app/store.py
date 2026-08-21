@@ -55,7 +55,12 @@ APPEARANCE_DEFAULTS = {
     "background": "plain",
     "background_url": "",  # a cached slug, not a remote URL
     "background_dim": 55,  # percent of scrim over an image, so text stays legible
+    # Not a look, strictly, but it lives here for the same reason the rest
+    # does: it is a shared choice about what the page shows, and the refresh
+    # loop reads it to decide whether to ask the daemon for stats at all.
+    "stats": True,
 }
+_FALSEY = {"false", "0", "no", "off", ""}
 
 
 class ValidationError(ValueError):
@@ -176,7 +181,7 @@ class Store:
                 raise ValidationError(f"Unknown appearance setting: {key}")
             value = raw if isinstance(raw, int) else str(raw or "").strip()
 
-            if value == "" and key != "theme":
+            if value == "" and key not in {"theme", "stats"}:
                 clean[key] = ""
                 continue
             if key == "theme":
@@ -197,6 +202,10 @@ class Store:
                 # from a third party and no URL from the form is ever rendered.
                 if not _ICON_RE.match(str(value)):
                     raise ValidationError("Background image must be a cached name.")
+            elif key == "stats":
+                # Accepts the JSON boolean the page sends, and the string form
+                # a hand-written curl is likely to use.
+                value = value if isinstance(value, bool) else str(value).strip().lower() not in _FALSEY
             elif key == "background_dim":
                 try:
                     value = max(0, min(90, int(value)))

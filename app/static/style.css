@@ -255,6 +255,17 @@ footer a { color: var(--muted); }
   background: var(--accent);
   border-color: var(--accent);
 }
+/* Stats being on is the ordinary state, so it keeps the ordinary look -- the
+   filled treatment is edit mode's, and a permanently lit header button would
+   read as a warning. Only "off" is worth marking. */
+#stats-toggle[aria-pressed="true"] {
+  color: var(--muted);
+  background: var(--bg-soft);
+  border-color: var(--line);
+}
+#stats-toggle[aria-pressed="true"]:hover { color: var(--text); border-color: var(--accent); }
+#stats-toggle[aria-pressed="false"] { opacity: 0.6; }
+
 .icon-btn.tiny { padding: 0 6px; font-size: 12px; line-height: 1.6; }
 
 .hint {
@@ -627,6 +638,10 @@ body.bg-image::before {
 
 .swatches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .swatch {
+  /* Safari will not paint a background on a button that still has its native
+     appearance, which left the swatches as empty circles there. */
+  appearance: none;
+  -webkit-appearance: none;
   width: 26px;
   height: 26px;
   border-radius: 50%;
@@ -652,6 +667,10 @@ body.bg-image::before {
   background: none;
   cursor: pointer;
 }
+/* Marked like a swatch when the accent in force came from here rather than
+   from one of the presets. */
+#a-accent-custom[aria-pressed="true"] { border: 2px solid var(--text); }
+
 .inline-label { display: flex; justify-content: space-between; align-items: baseline; }
 #a-dim { width: 100%; accent-color: var(--accent); }
 
