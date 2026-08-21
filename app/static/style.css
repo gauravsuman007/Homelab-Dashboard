@@ -204,6 +204,21 @@ body {
 .pub:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .pub svg { flex: 0 0 auto; }
 
+/* Per-card memory and storage. Icon-and-number pairs rather than labelled
+   rows, so this stays a single unobtrusive line even on the narrowest card --
+   the full breakdown is one hover away in the title attribute. */
+.usage {
+  display: flex;
+  gap: 12px;
+  padding: 0 13px 11px 64px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.use { display: inline-flex; align-items: center; gap: 4px; cursor: default; }
+.use svg { flex: 0 0 auto; opacity: 0.75; }
+.use sup { font-size: 9px; margin-left: 1px; }
+
 /* Footer ---------------------------------------------------------------- */
 
 .empty-note { color: var(--muted); margin-top: 30px; }

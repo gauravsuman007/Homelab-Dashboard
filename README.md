@@ -20,8 +20,8 @@ drag it to another category. That sticks, and everything you *didn't* touch keep
 updating itself.
 
 > **Scope, so you can rule it out fast.** This is a launcher for a LAN or tailnet:
-> links, categories, a reachability dot, host vitals, a keyboard search and
-> theming. It has
+> links, categories, a reachability dot, host and per-container vitals, a
+> keyboard search and theming. It has
 > no *per-service* API widgets — no Sonarr queue depth, no qBittorrent speeds — no
 > bookmarks, and no login; access control is the nginx ACL below. If you want live per-service API panels, you want
 > [Homepage](https://github.com/gethomepage/homepage) or
@@ -54,13 +54,13 @@ also all need to be told what you are running:
 | | What it wants from you | Widgets | Host stats | Editing |
 | --- | --- | --- | --- | --- |
 | **This** | a socket | none | built in | in the page |
-
-All of them theme; this one does it from the page rather than from a config file.
 | [Homepage](https://github.com/gethomepage/homepage) | a `homepage.*` label per container, or YAML | ~100 service widgets | a widget | edit YAML |
 | [Homarr](https://github.com/homarr-labs/homarr) | place every tile by hand | 40+ integrations | a widget | in the page |
 | [Dashy](https://github.com/Lissy93/dashy) | YAML listing every service | widgets, themes | a widget | UI editor |
 | [Glance](https://github.com/glanceapp/glance) | YAML | feeds, weather, markets | a widget | edit YAML |
 | [Homer](https://github.com/bastienwirtz/homer) | YAML listing every service | none | none | edit YAML |
+
+All of them theme; this one does it from the page rather than from a config file.
 
 So the honest summary: if you want live API panels, use Homepage or Homarr. If
 what you actually want is *the list of what is running here, correct, without
@@ -209,7 +209,7 @@ A palette toggle sits in the header — it cycles **follow device → dark → l
 and "follow device" is the default rather than a stored colour, so a new visitor
 gets their own system preference instead of whatever the last person picked.
 
-Everything else lives behind **Edit → Appearance…**:
+Everything else lives behind the palette icon in the header — a click away, no need to enter edit mode first:
 
 - **Accent** — eight swatches or any colour you like. It drives links, focus
   rings, meters and the generated backgrounds, because they all read the same
@@ -265,6 +265,46 @@ container, which on a normal install is the host's main disk. Set
 `SHOW_STATS=false` to drop the strip — worth doing if the page is on a screen
 guests can see. It is hidden automatically in `compact` mode, since a Home
 Assistant dashboard already measures the host properly.
+
+## Per-container memory and storage
+
+Each card carries two more figures beneath its links, once discovery has run:
+
+- **Memory** — the container's actual resident usage, with reclaimable page
+  cache subtracted, the same figure `docker stats` shows. Hover it for the
+  percentage of the *host's* total RAM: a container's own cgroup limit is
+  usually unset, in which case Docker reports the limit as the entire
+  machine — showing a percentage against that would just be restating "how
+  much RAM does this box have" on every card, so it isn't used.
+- **Storage** — the container's writable layer plus any named volumes it
+  mounts, both read from the same usage accounting `docker system df -v`
+  itself prints, so this costs nothing beyond what Docker already tracks.
+
+Getting the per-container memory figure without stalling the page took a
+specific fix: the naive way to ask Docker for a single container's stats
+waits out a second sampling cycle (~1s) to compute a CPU delta neither number
+needs — measured at 40 seconds for a modest fleet, sequentially. Asking with
+`one_shot=true` skips that wait; measured at under a second for the same
+fleet, which is why this runs inline with every refresh rather than needing
+its own schedule.
+
+**Bind mounts are the honest exception.** Docker does not track a bind
+mount's size anywhere — it is just a host path, and sizing one means walking
+whatever filesystem it lives on. This app is deliberately never given the
+host filesystem, to keep "the socket is the only required input" true, so a
+bind mount's contribution to a card's storage figure is marked with `*` and
+left out of the total by default.
+
+Set `MEASURE_BIND_MOUNTS=true` to size them anyway. The socket already grants
+enough to do this without a new mount: it can launch a container, and a
+container can be handed exactly one bind mount, read-only, network-disabled,
+to `du` and then be removed. This is the **one place in the project that
+creates something rather than reading** — which is why it is opt-in, runs on
+its own long interval (`MOUNT_SCAN_SECONDS`, default 30 minutes) rather than
+every refresh, and is called out here rather than folded quietly into "this
+only ever reads." A slow filesystem (network storage, a cold spinning disk)
+or a huge directory just times out and leaves that one path unmeasured for
+this cycle; nothing else on the page waits for it.
 
 ## The nginx snippet
 
@@ -348,7 +388,9 @@ All optional, set in `docker-compose.yml`:
 | `EDGE_CONFIG_DIR` | unset | read proxy config from a mount instead of the API |
 | `FAVICON_FALLBACK` | `true` | ask services for their own favicon when the icon set misses |
 | `ALLOW_EDIT` | `true` | enable edit mode and the endpoints that write to it |
-| `SHOW_STATS` | `true` | host CPU/RAM/disk/uptime strip in the header |
+| `SHOW_STATS` | `true` | host vitals strip, and per-container memory/storage |
+| `MEASURE_BIND_MOUNTS` | `false` | size bind mounts via a short-lived container per path — see "Per-container memory and storage" |
+| `MOUNT_SCAN_SECONDS` | `1800` | how often bind mounts are rescanned, when enabled |
 | `CUSTOMISATIONS_PATH` | `/config/customisations.json` | where edit-mode changes are stored |
 | `ICON_MISS_TTL_HOURS` | `24` | how long a "no icon found" result is remembered |
 
@@ -513,7 +555,7 @@ the finished virtualenv.
 | --- | --- |
 | [![dark](docs/screenshot.png)](docs/screenshot.png) | [![light](docs/light.png)](docs/light.png) |
 
-Theme, accent and background live behind **Edit → Appearance…**:
+Theme, accent and background live behind the palette icon in the header:
 
 <img src="docs/appearance.png" alt="The appearance sheet: theme, accent swatches and background options" width="440">
 

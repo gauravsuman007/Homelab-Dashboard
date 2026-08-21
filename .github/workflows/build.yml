@@ -47,6 +47,7 @@ jobs:
           cd app
           python - <<'PY'
           import discovery
+          import stats
 
           # NPM config parsing, straight from a representative server block.
           conf = {
@@ -234,6 +235,68 @@ jobs:
           path.write_text("{ not json")
           assert S.Store(path).categories() == []
 
+          # Per-container memory: subtracting reclaimable page cache from the
+          # raw cgroup usage figure, across both cgroup versions, and treating
+          # a stopped container's empty {} the same as "not measurable" rather
+          # than a crash.
+          assert stats.humanize_bytes(None) == ""
+          assert stats.humanize_bytes(512) == "512 B"
+          assert stats.humanize_bytes(2_500_000_000) == "2.3 GB"
+
+          v2_payload = {"memory_stats": {"usage": 1000, "stats": {"inactive_file": 300}}}
+          assert stats._memory_from_stats(v2_payload) == 700
+          v1_payload = {"memory_stats": {"usage": 1000, "stats": {"total_inactive_file": 100}}}
+          assert stats._memory_from_stats(v1_payload) == 900
+          no_cache_payload = {"memory_stats": {"usage": 1000, "stats": {}}}
+          assert stats._memory_from_stats(no_cache_payload) == 1000
+          assert stats._memory_from_stats({"memory_stats": {}}) is None, "a stopped container is not an error"
+          assert stats._memory_from_stats({}) is None
+
+          # Disk usage: parsed out of the same verbose payload `docker system df
+          # -v` itself reads, through a fake client so no daemon is needed here.
+          class _FakeAPI:
+              def _url(self, path):
+                  return path
+
+              def _get(self, url, params=None):
+                  assert params == {"verbose": "true"}, "must ask for the broken-out figures"
+                  return "response"
+
+              def _result(self, response, json):
+                  return {
+                      "Containers": [
+                          {"Names": ["/radarr"], "SizeRw": 4096},
+                          {"Names": ["/sonarr", "/sonarr-alias"], "SizeRw": 8192},
+                      ],
+                      "Volumes": [
+                          {"Name": "media", "UsageData": {"Size": 500}},
+                          {"Name": "not-yet-computed", "UsageData": {"Size": -1}},
+                      ],
+                  }
+
+          class _FakeClient:
+              api = _FakeAPI()
+
+          container_rw, volumes = stats.read_disk_usage(_FakeClient())
+          assert container_rw == {"radarr": 4096, "sonarr": 8192, "sonarr-alias": 8192}
+          assert volumes == {"media": 500}, "a -1 size (not computed yet) must not be reported as zero"
+
+          class _BrokenClient:
+              class api:
+                  @staticmethod
+                  def _url(path): raise RuntimeError("daemon unreachable")
+
+          assert stats.read_disk_usage(_BrokenClient()) == ({}, {}), "must degrade, not raise"
+
+          # Mounts travel from a container's facts through to its card, so the
+          # page can attribute a volume's size without a second daemon lookup.
+          mounted = facts(name="radarr", mounts=[
+              {"type": "bind", "source": "/data/radarr", "destination": "/config"},
+              {"type": "volume", "source": "media", "destination": "/media"},
+          ])
+          built = discovery.build_apps([mounted], [], {"apps": {"radarr": {"port": 7878}}}, set())
+          assert built[0].mounts == mounted.mounts
+
           # Appearance. These values are interpolated into a <style> block,
           # so anything that is not obviously a colour must be refused.
           look = S.Store(path)
@@ -311,6 +374,7 @@ jobs:
           page = plain.data.decode()
           assert 'id="search-count"' in page, "live search needs its result readout"
           assert 'id="theme-toggle"' in page, "the palette toggle is not an edit-mode feature"
+          assert 'id="appearance-open"' in page, "accent/background must not require entering edit mode first"
           assert "<style>" not in page, "the default look must add no inline style"
 
           embed = client.get("/?embed=1&compact=1&theme=light").data.decode()

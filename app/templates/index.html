@@ -51,6 +51,20 @@
     </svg>
   </button>
   {% if allow_edit %}
+  {# Always visible, unlike edit mode: choosing an accent colour or a
+     background is a low-stakes, one-off action -- it should not require
+     switching the whole page into "drag things around" mode first, the way
+     finding it used to. #}
+  <button id="appearance-open" type="button" class="icon-btn" title="Appearance: theme, accent, background">
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+      <path d="M10 2.5a7.5 7.5 0 1 0 0 15c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6h1.9c1.7 0 3.2-1.4 3.2-3.2C17.5 5.4 14.1 2.5 10 2.5z"
+            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+      <circle cx="6.3" cy="8.2" r="1.1" fill="currentColor"/>
+      <circle cx="9.4" cy="5.9" r="1.1" fill="currentColor"/>
+      <circle cx="13.1" cy="7.4" r="1.1" fill="currentColor"/>
+      <circle cx="6.7" cy="11.9" r="1.1" fill="currentColor"/>
+    </svg>
+  </button>
   <button id="edit-toggle" type="button" class="icon-btn" aria-pressed="false" title="Edit layout">
     <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
       <path d="M13.6 2.9a1.7 1.7 0 0 1 2.4 0l1.1 1.1a1.7 1.7 0 0 1 0 2.4l-8.5 8.5-3.8.9.9-3.8 8.5-8.5z"
@@ -136,6 +150,27 @@
           {% endfor %}
         </div>
         {% endif %}
+        {% if vitals and (a.mem_used is not none or a.storage) %}
+        {# Usage is a supporting fact, not something to probe for: whatever
+           this refresh already measured is shown as-is, with no per-card
+           request of its own. A blank field just means that source declined
+           to answer this cycle -- the rest of the line still renders. #}
+        <div class="usage">
+          {% if a.mem_used is not none %}
+          <span class="use" data-usage="mem" title="{{ a.mem_used|bytes }} resident{% if a.mem_host_percent %}, {{ a.mem_host_percent }}% of host RAM{% endif %}">
+            <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+            <span class="n">{{ a.mem_used|bytes }}</span>
+          </span>
+          {% endif %}
+          {% if a.storage %}
+          <span class="use" data-usage="storage" title="{{ a.storage.container|bytes }} container layer{% if a.storage.volumes %} + {{ a.storage.volumes|bytes }} volumes{% endif %}{% if a.storage.binds %} + {{ a.storage.binds|bytes }} bind mounts{% endif %}{% if a.storage.bind_count and a.storage.binds is none %} ({{ a.storage.bind_count }} bind mount{{ 's' if a.storage.bind_count != 1 }} not measured){% endif %}">
+            <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.5" ry="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 4v8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V4M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+            <span class="n">{{ (a.storage.container + a.storage.volumes + (a.storage.binds or 0))|bytes }}</span>
+            {%- if a.storage.bind_count and a.storage.binds is none %}<sup>*</sup>{% endif %}
+          </span>
+          {% endif %}
+        </div>
+        {% endif %}
         <span class="grip" aria-hidden="true" title="Drag to another category">⠿</span>
       </article>
     {% endfor %}
@@ -146,7 +181,6 @@
 
 {% if allow_edit %}
 <button type="button" id="cat-add" class="add-cat" hidden>+ Add category</button>
-<button type="button" id="appearance-open" class="add-cat" hidden>Appearance…</button>
 {% endif %}
 
 {% if total == 0 %}
@@ -155,6 +189,9 @@
 
 <footer>
   <span id="updated"></span> · <a href="/api/apps">JSON</a>
+  {% if unmeasured_binds %}
+  <span class="foot-note">· <sup>*</sup> bind-mounted storage isn't measured by default (set <code>MEASURE_BIND_MOUNTS=true</code>)</span>
+  {% endif %}
 </footer>
 
 {# Card editor. Kept in the page rather than built in JS so it is styled and

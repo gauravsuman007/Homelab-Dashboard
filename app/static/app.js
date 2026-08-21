@@ -228,6 +228,40 @@
     return "updated " + new Date(seconds * 1000).toLocaleTimeString();
   }
 
+  // Mirrors stats.humanize_bytes exactly (same thresholds, same one decimal
+  // place) so a number patched in by polling is never visibly different from
+  // the one the server rendered on first paint.
+  function formatBytes(n) {
+    if (n === null || n === undefined) return "";
+    if (n < 1024) return n + " B";
+    var units = ["KB", "MB", "GB", "TB"], scale = 1024, unit = units[0];
+    for (var i = 0; i < units.length; i++) {
+      if (n < Math.pow(1024, i + 2)) { unit = units[i]; scale = Math.pow(1024, i + 1); break; }
+      unit = units[i];
+      scale = Math.pow(1024, i + 1);
+    }
+    return (n / scale).toFixed(1) + " " + unit;
+  }
+
+  // Per-card memory and storage change slowly -- a container's RAM drifts a
+  // little every refresh, its disk usage barely at all -- so this only
+  // updates the number already on the page. It does not add the line to a
+  // card that does not have one yet (e.g. a container that just started):
+  // that appears on the next full page load, same as a new card would.
+  function paintUsage(card, item) {
+    var mem = card.querySelector('[data-usage="mem"]');
+    if (mem && item.mem_used !== null && item.mem_used !== undefined) {
+      mem.querySelector(".n").textContent = formatBytes(item.mem_used);
+      mem.title = formatBytes(item.mem_used) + " resident" +
+        (item.mem_host_percent ? ", " + item.mem_host_percent + "% of host RAM" : "");
+    }
+    var store = card.querySelector('[data-usage="storage"]');
+    if (store && item.storage) {
+      var total = item.storage.container + item.storage.volumes + (item.storage.binds || 0);
+      store.querySelector(".n").textContent = formatBytes(total);
+    }
+  }
+
   function poll() {
     // Never reload or repaint underneath someone who is editing.
     if (editing) return;
@@ -244,6 +278,7 @@
           card.classList.toggle("down", item.online === false);
           card.classList.toggle("idle", item.online === null);
           card.classList.toggle("stopped", !item.running);
+          paintUsage(card, item);
         });
         if (statOnline) statOnline.innerHTML = "<strong>" + up + "</strong>/" + data.apps.length + " up";
         paintVitals(data.vitals);
@@ -391,8 +426,6 @@
     editToggle.querySelector(".label").textContent = on ? "Done" : "Edit";
     if (editHint) editHint.hidden = !on;
     if (addCat) addCat.hidden = !on;
-    var appearanceOpen = document.getElementById("appearance-open");
-    if (appearanceOpen) appearanceOpen.hidden = !on;
     document.querySelectorAll(".card").forEach(function (c) { c.draggable = on; });
     document.querySelectorAll(".cat-name").forEach(function (n) {
       n.contentEditable = on ? "true" : "false";

@@ -176,6 +176,15 @@ class App:
     scheme: str = "http"
     public_urls: list[str] = field(default_factory=list)
     online: bool | None = None  # None = not probed
+    mounts: list[dict] = field(default_factory=list)
+    # Filled in by the refresh loop, after the card list exists: usage.py's
+    # single-shot stats call and the daemon's own disk-usage cache are both
+    # per-container lookups keyed by the id/mounts carried here, done as a
+    # second pass so a failure to read one container's usage cannot keep its
+    # card off the page.
+    mem_used: int | None = None
+    mem_host_percent: float | None = None
+    storage: dict | None = None  # {"container": int, "volumes": int, "binds": int|None}
 
     def lan_url(self, request_host: str | None) -> str | None:
         """The LAN URL as seen from ``request_host`` (a bare host, no port)."""
@@ -197,6 +206,9 @@ class App:
             "lan_url": self.lan_url(request_host),
             "public_urls": self.public_urls,
             "online": self.online,
+            "mem_used": self.mem_used,
+            "mem_host_percent": self.mem_host_percent,
+            "storage": self.storage,
             "derived": {
                 "name": self.derived_name,
                 "icon": self.derived_icon,
@@ -606,6 +618,10 @@ class ContainerFacts:
     oci_title: str = ""
     compose_service: str = ""
     compose_project: str = ""
+    # Docker's own view of what is mounted, carried straight through: enough to
+    # attribute a volume's size to the container that uses it, and to know a
+    # bind source exists without this app ever touching the host filesystem.
+    mounts: list[dict] = field(default_factory=list)
 
 
 def _container_facts(container) -> ContainerFacts:
@@ -647,6 +663,18 @@ def _container_facts(container) -> ContainerFacts:
     labels = config.get("Labels") or {}
     host_network = (attrs.get("HostConfig", {}) or {}).get("NetworkMode") == "host"
 
+    mounts = [
+        {
+            "type": m.get("Type", ""),
+            # A volume's identity is its name; a bind's is its host path. Both
+            # arrive as "source" so callers need not branch on type to find it.
+            "source": m.get("Name") or m.get("Source", ""),
+            "destination": m.get("Destination", ""),
+        }
+        for m in (attrs.get("Mounts") or [])
+        if m.get("Type") in {"volume", "bind"}
+    ]
+
     # A host-network container publishes nothing through the port bindings, but
     # it is still bound on the host's interfaces -- so what the image declares as
     # exposed *is* its host port. This is how Jellyfin's 8096 is found without
@@ -666,6 +694,7 @@ def _container_facts(container) -> ContainerFacts:
         oci_title=labels.get("org.opencontainers.image.title", "") or "",
         compose_service=labels.get("com.docker.compose.service", "") or "",
         compose_project=labels.get("com.docker.compose.project", "") or "",
+        mounts=mounts,
     )
 
 
@@ -801,6 +830,7 @@ def build_apps(
                 lan_url_override=cfg.get("url"),
                 scheme=cfg.get("scheme", "http"),
                 public_urls=public_urls,
+                mounts=facts.mounts,
             )
         )
 
