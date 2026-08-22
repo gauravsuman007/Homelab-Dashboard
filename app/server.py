@@ -80,12 +80,8 @@ def _stats_on() -> bool:
     the work and threw it away would be a lie.
     """
     return SHOW_STATS and bool(store.appearance().get("stats", True))
-# Per-container memory and the writable-layer/volume half of storage cost
-# nothing beyond what discovery already reads, so they are on by default with
-# the rest of the vitals. Bind-mount sizes are the exception -- see
-# MEASURE_BIND_MOUNTS below, right where stats.scan_bind_mount is used.
-MEASURE_BIND_MOUNTS = os.environ.get("MEASURE_BIND_MOUNTS", "false").lower() in {"1", "true", "yes"}
-MOUNT_SCAN_SECONDS = int(os.environ.get("MOUNT_SCAN_SECONDS", str(30 * 60)))
+
+
 ICON_CACHE_DIR = Path(os.environ.get("ICON_CACHE_DIR", "/cache/icons"))
 REFRESH_SECONDS = float(os.environ.get("REFRESH_SECONDS", "30"))
 PROBE_TIMEOUT = float(os.environ.get("PROBE_TIMEOUT", "2.0"))
@@ -127,13 +123,6 @@ _state: dict = {
 # address of this box, which is exactly what upstream matching needs. Kept in
 # memory only, so a restart re-learns rather than carrying a stale guess.
 _seen_hosts: set[str] = set()
-
-# Bind-mount sizes, keyed by host path, filled in by a separate slow-interval
-# loop (see _mount_scan_loop). Read from here during a normal refresh rather
-# than measured inline, since a du over a media library can take far longer
-# than the page's own refresh budget.
-_bind_lock = threading.Lock()
-_bind_sizes: dict[str, int] = {}
 
 store = store_module.Store(CUSTOMISATIONS_PATH)
 
@@ -255,39 +244,12 @@ def _refresh() -> None:
         vitals = stats_module.read_vitals(client) if stats_on else None
 
         if stats_on:
-            # One call covers every container's writable layer and every
-            # volume's size -- see stats.read_disk_usage for why this is cheap
-            # enough to do unconditionally on the normal refresh cadence.
-            container_rw, volume_bytes = stats_module.read_disk_usage(client)
-            with _bind_lock:
-                bind_bytes = dict(_bind_sizes)
             host_mem_total = vitals.mem_total if vitals else None
-
             for item in apps:
                 if item.running:
                     item.mem_used = stats_module.container_memory(client, item.key)
                     if item.mem_used is not None and host_mem_total:
                         item.mem_host_percent = round(100 * item.mem_used / host_mem_total, 1)
-
-                volumes_total = sum(
-                    volume_bytes.get(m["source"], 0)
-                    for m in item.mounts if m["type"] == "volume"
-                )
-                bind_sources = [m["source"] for m in item.mounts if m["type"] == "bind"]
-                # None when a bind exists but has never been scanned (the
-                # feature is off, or the scan hasn't reached this path yet) --
-                # distinct from zero, which would claim an empty mount.
-                if bind_sources and MEASURE_BIND_MOUNTS:
-                    known = [bind_bytes[p] for p in bind_sources if p in bind_bytes]
-                    binds_total = sum(known) if len(known) == len(bind_sources) else None
-                else:
-                    binds_total = None
-                item.storage = {
-                    "container": container_rw.get(item.key, 0),
-                    "volumes": volumes_total,
-                    "binds": binds_total,
-                    "bind_count": len(bind_sources),
-                }
     finally:
         client.close()
 
@@ -459,12 +421,6 @@ def index() -> str:
         # all; with SHOW_STATS off there is nothing for it to turn back on.
         can_toggle_stats=SHOW_STATS and ALLOW_EDIT and not embed,
         stats_on=stats_on,
-        # Only worth mentioning when it would otherwise look like a bug: cards
-        # with an asterisked storage figure and no explanation in sight.
-        unmeasured_binds=(
-            stats_on and not MEASURE_BIND_MOUNTS
-            and any((a.get("storage") or {}).get("bind_count") for a in items)
-        ),
     )
 
 
@@ -969,41 +925,7 @@ def _letter_tile(letter: str) -> Response:
 
 
 # Started at import so it runs under gunicorn as well as `flask run`.
-def _mount_scan_loop() -> None:
-    """Sizes every bind mount's host path, on its own slow interval.
-
-    Kept apart from the normal refresh loop deliberately: a `du` over a media
-    library can run for many seconds, sometimes minutes on a cold spinning
-    disk, and the page's own 30-second cadence must never wait on that. Results
-    land in ``_bind_sizes`` and the next normal refresh just reads them.
-    """
-    time.sleep(60)  # let the first ordinary refresh populate the app list first
-    while True:
-        with _state_lock:
-            apps = list(_state["apps"])
-        paths = sorted({m["source"] for a in apps for m in a.mounts if m["type"] == "bind"})
-        # Stats switched off in the header means no scanning either: this is
-        # the most expensive thing the app does, and nothing would read it.
-        if paths and _stats_on():
-            client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
-            try:
-                for path in paths:
-                    size = stats_module.scan_bind_mount(client, path)
-                    if size is not None:
-                        with _bind_lock:
-                            _bind_sizes[path] = size
-            except docker.errors.DockerException as exc:
-                log.warning("bind-mount scan: cannot reach the Docker socket (%s)", exc)
-            finally:
-                client.close()
-        time.sleep(MOUNT_SCAN_SECONDS)
-
-
 threading.Thread(target=_refresh_loop, daemon=True).start()
-if MEASURE_BIND_MOUNTS:
-    # Off by default: this is the one place the app creates a container rather
-    # than only reading one. See the README section on bind-mount sizing.
-    threading.Thread(target=_mount_scan_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8500")))

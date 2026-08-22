@@ -140,8 +140,8 @@ def _pair(used: int | None, total: int | None) -> str:
 def humanize_bytes(size: int | None) -> str:
     """"1.4 GB" for a single byte count -- distinct from _pair's used/total.
 
-    Used for a container's own memory or storage figure, where there is no
-    "total" to show it against. "" for None, so a template can test truthiness
+    Used for a container's own memory figure, where there is no "total" to
+    show it against. "" for None, so a template can test truthiness
     directly instead of every caller checking for None first.
     """
     if size is None:
@@ -341,101 +341,3 @@ def _memory_from_stats(payload: dict) -> int | None:
     sub = mem.get("stats") or {}
     cache = sub.get("inactive_file", sub.get("total_inactive_file", sub.get("cache", 0)))
     return max(int(usage) - int(cache or 0), 0)
-
-
-# --------------------------------------------------------------------------
-# Disk usage: the writable layer, and named volumes
-# --------------------------------------------------------------------------
-#
-# Both numbers come from one call to the daemon's own usage accounting -- the
-# same data ``docker system df -v`` prints -- so no extra mount and no separate
-# per-container request is needed, and it costs nothing beyond what Docker
-# already tracks: repeated calls measured under a second even on a few dozen
-# containers, because the daemon caches this between relevant filesystem
-# events rather than re-walking anything each time it is asked.
-#
-# docker-py's own ``client.api.df()`` wraps this endpoint but does not expose
-# ``verbose``, which is the only way to get it broken out per container and
-# per volume rather than as one grand total -- so this calls the endpoint the
-# same way that wrapper does, one level down.
-
-def read_disk_usage(client) -> tuple[dict[str, int], dict[str, int]]:
-    """(container writable-layer bytes by name, volume bytes by volume name).
-
-    Both dicts are empty, never an exception, if the daemon does not answer --
-    a dashboard that cannot show disk usage this cycle should not lose the rest
-    of the page over it.
-    """
-    try:
-        url = client.api._url("/system/df")
-        payload = client.api._result(client.api._get(url, params={"verbose": "true"}), True)
-    except Exception as exc:
-        log.warning("disk usage unavailable: %s", exc)
-        return {}, {}
-
-    container_rw = {}
-    for entry in payload.get("Containers") or []:
-        for name in entry.get("Names") or []:
-            container_rw[name.lstrip("/")] = int(entry.get("SizeRw") or 0)
-
-    volume_bytes = {}
-    for entry in payload.get("Volumes") or []:
-        size = (entry.get("UsageData") or {}).get("Size", -1)
-        if size is not None and size >= 0:  # -1 means "not computed yet"
-            volume_bytes[entry.get("Name", "")] = int(size)
-
-    return container_rw, volume_bytes
-
-
-# --------------------------------------------------------------------------
-# Bind-mount sizing -- opt-in, because it is not a read
-# --------------------------------------------------------------------------
-#
-# Everything above this line only ever lists, inspects, or reads a file out of
-# a container. A bind mount's host path has no size Docker tracks anywhere --
-# measuring one means walking the filesystem it lives on, and this app is
-# deliberately never given the host filesystem to keep the "one required mount
-# is the socket" promise intact.
-#
-# The socket already grants that walk, though: it can run a container, and a
-# container can be handed exactly one bind mount to measure. So a bind mount's
-# size is read by launching a short-lived, network-disabled, read-only
-# container whose only job is ``du`` over that one path, then removing it.
-# This is the one place in the project that *creates* something rather than
-# reading -- which is why it is opt-in (``MEASURE_BIND_MOUNTS``), runs on its
-# own long interval rather than every refresh, and is documented as exactly
-# what it is in the README rather than folded quietly into "read-only".
-
-DU_IMAGE = "alpine:3"
-
-
-def scan_bind_mount(client, host_path: str, timeout: int = 30) -> int | None:
-    """Bytes used under ``host_path``, via a throwaway container, or None.
-
-    ``None`` covers every way this can fail to produce a trustworthy number: a
-    path that no longer exists, a slow filesystem (network storage, a cold
-    spinning disk) that outruns ``timeout``, or the image being unavailable.
-    The container is force-removed in every case, including a timeout, so a
-    slow scan leaks nothing for the next one to trip over.
-    """
-    container = None
-    try:
-        container = client.containers.run(
-            DU_IMAGE, ["du", "-sb", "/mnt"],
-            volumes={host_path: {"bind": "/mnt", "mode": "ro"}},
-            network_mode="none", mem_limit="64m", detach=True,
-        )
-        result = container.wait(timeout=timeout)
-        if result.get("StatusCode") != 0:
-            return None
-        output = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
-        return int(output.split()[0])
-    except Exception as exc:
-        log.debug("bind mount scan failed for %s: %s", host_path, exc)
-        return None
-    finally:
-        if container is not None:
-            try:
-                container.remove(force=True)
-            except Exception as exc:
-                log.debug("could not remove scan container for %s: %s", host_path, exc)

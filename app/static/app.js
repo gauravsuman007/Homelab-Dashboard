@@ -243,22 +243,16 @@
     return (n / scale).toFixed(1) + " " + unit;
   }
 
-  // Per-card memory and storage change slowly -- a container's RAM drifts a
-  // little every refresh, its disk usage barely at all -- so this only
-  // updates the number already on the page. It does not add the line to a
-  // card that does not have one yet (e.g. a container that just started):
-  // that appears on the next full page load, same as a new card would.
+  // Per-card memory changes slowly, so this only updates the number already
+  // on the page. It does not add the line to a card that does not have one
+  // yet (e.g. a container that just started): that appears on the next full
+  // page load, same as a new card would.
   function paintUsage(card, item) {
     var mem = card.querySelector('[data-usage="mem"]');
     if (mem && item.mem_used !== null && item.mem_used !== undefined) {
       mem.querySelector(".n").textContent = formatBytes(item.mem_used);
       mem.title = formatBytes(item.mem_used) + " resident" +
         (item.mem_host_percent ? ", " + item.mem_host_percent + "% of host RAM" : "");
-    }
-    var store = card.querySelector('[data-usage="storage"]');
-    if (store && item.storage) {
-      var total = item.storage.container + item.storage.volumes + (item.storage.binds || 0);
-      store.querySelector(".n").textContent = formatBytes(total);
     }
   }
 

@@ -275,11 +275,12 @@ the failure this strip exists to catch.
 Two limits, stated rather than hidden: under **lxcfs** (Proxmox/LXC) or **Docker
 Desktop** those files describe the VM or container rather than the metal; and
 `Disk` is the filesystem Docker's data sits on, measured from `/` inside the
-container, which on a normal install is the host's main disk. Set
+container, which on a normal install is the host's main disk.
+
 There is a **switch for this in the header** — the small bar-chart button, next
 to the palette. It is a real off switch, not a CSS one: with stats off the
-refresh loop stops asking the daemon for vitals, per-container memory and disk
-usage entirely, rather than measuring everything and then hiding it. Like the
+refresh loop stops asking the daemon for vitals and per-container memory
+entirely, rather than measuring everything and then hiding it. Like the
 rest of the appearance settings it is shared and stored, so a dashboard turned
 quiet on a laptop is quiet on the wall tablet too.
 
@@ -289,45 +290,22 @@ can see it cannot be talked back into reporting on the machine. Stats are also
 hidden automatically in `compact` mode, since a Home Assistant dashboard already
 measures the host properly.
 
-## Per-container memory and storage
+## Per-container memory
 
-Each card carries two more figures beneath its links, once discovery has run:
+Each card carries one more figure beneath its links, once discovery has run:
+the container's **actual resident memory**, with reclaimable page cache
+subtracted, the same figure `docker stats` shows. Hover it for the percentage
+of the *host's* total RAM — a container's own cgroup limit is usually unset,
+in which case Docker reports the limit as the entire machine, and a percentage
+against that would just be restating "how much RAM does this box have" on
+every card.
 
-- **Memory** — the container's actual resident usage, with reclaimable page
-  cache subtracted, the same figure `docker stats` shows. Hover it for the
-  percentage of the *host's* total RAM: a container's own cgroup limit is
-  usually unset, in which case Docker reports the limit as the entire
-  machine — showing a percentage against that would just be restating "how
-  much RAM does this box have" on every card, so it isn't used.
-- **Storage** — the container's writable layer plus any named volumes it
-  mounts, both read from the same usage accounting `docker system df -v`
-  itself prints, so this costs nothing beyond what Docker already tracks.
-
-Getting the per-container memory figure without stalling the page took a
-specific fix: the naive way to ask Docker for a single container's stats
-waits out a second sampling cycle (~1s) to compute a CPU delta neither number
-needs — measured at 40 seconds for a modest fleet, sequentially. Asking with
-`one_shot=true` skips that wait; measured at under a second for the same
-fleet, which is why this runs inline with every refresh rather than needing
-its own schedule.
-
-**Bind mounts are the honest exception.** Docker does not track a bind
-mount's size anywhere — it is just a host path, and sizing one means walking
-whatever filesystem it lives on. This app is deliberately never given the
-host filesystem, to keep "the socket is the only required input" true, so a
-bind mount's contribution to a card's storage figure is marked with `*` and
-left out of the total by default.
-
-Set `MEASURE_BIND_MOUNTS=true` to size them anyway. The socket already grants
-enough to do this without a new mount: it can launch a container, and a
-container can be handed exactly one bind mount, read-only, network-disabled,
-to `du` and then be removed. This is the **one place in the project that
-creates something rather than reading** — which is why it is opt-in, runs on
-its own long interval (`MOUNT_SCAN_SECONDS`, default 30 minutes) rather than
-every refresh, and is called out here rather than folded quietly into "this
-only ever reads." A slow filesystem (network storage, a cold spinning disk)
-or a huge directory just times out and leaves that one path unmeasured for
-this cycle; nothing else on the page waits for it.
+Getting this without stalling the page took a specific fix: the naive way to
+ask Docker for a single container's stats waits out a second sampling cycle
+(~1s) to compute a CPU delta this number does not need — measured at 40 seconds
+for a modest fleet, sequentially. Asking with `one_shot=true` skips that wait;
+measured at under a second for the same fleet, which is why this runs inline
+with every refresh rather than needing its own schedule.
 
 ## The nginx snippet
 
@@ -411,9 +389,7 @@ All optional, set in `docker-compose.yml`:
 | `EDGE_CONFIG_DIR` | unset | read proxy config from a mount instead of the API |
 | `FAVICON_FALLBACK` | `true` | ask services for their own favicon when the icon set misses |
 | `ALLOW_EDIT` | `true` | enable edit mode and the endpoints that write to it |
-| `SHOW_STATS` | `true` | allow stats at all: the vitals strip, per-container memory/storage, and the header switch for them |
-| `MEASURE_BIND_MOUNTS` | `false` | size bind mounts via a short-lived container per path — see "Per-container memory and storage" |
-| `MOUNT_SCAN_SECONDS` | `1800` | how often bind mounts are rescanned, when enabled |
+| `SHOW_STATS` | `true` | allow stats at all: the vitals strip, per-container memory, and the header switch for them |
 | `CUSTOMISATIONS_PATH` | `/config/customisations.json` | where edit-mode changes are stored |
 | `ICON_MISS_TTL_HOURS` | `24` | how long a "no icon found" result is remembered |
 

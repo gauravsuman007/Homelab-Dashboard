@@ -252,51 +252,6 @@ jobs:
           assert stats._memory_from_stats({"memory_stats": {}}) is None, "a stopped container is not an error"
           assert stats._memory_from_stats({}) is None
 
-          # Disk usage: parsed out of the same verbose payload `docker system df
-          # -v` itself reads, through a fake client so no daemon is needed here.
-          class _FakeAPI:
-              def _url(self, path):
-                  return path
-
-              def _get(self, url, params=None):
-                  assert params == {"verbose": "true"}, "must ask for the broken-out figures"
-                  return "response"
-
-              def _result(self, response, json):
-                  return {
-                      "Containers": [
-                          {"Names": ["/radarr"], "SizeRw": 4096},
-                          {"Names": ["/sonarr", "/sonarr-alias"], "SizeRw": 8192},
-                      ],
-                      "Volumes": [
-                          {"Name": "media", "UsageData": {"Size": 500}},
-                          {"Name": "not-yet-computed", "UsageData": {"Size": -1}},
-                      ],
-                  }
-
-          class _FakeClient:
-              api = _FakeAPI()
-
-          container_rw, volumes = stats.read_disk_usage(_FakeClient())
-          assert container_rw == {"radarr": 4096, "sonarr": 8192, "sonarr-alias": 8192}
-          assert volumes == {"media": 500}, "a -1 size (not computed yet) must not be reported as zero"
-
-          class _BrokenClient:
-              class api:
-                  @staticmethod
-                  def _url(path): raise RuntimeError("daemon unreachable")
-
-          assert stats.read_disk_usage(_BrokenClient()) == ({}, {}), "must degrade, not raise"
-
-          # Mounts travel from a container's facts through to its card, so the
-          # page can attribute a volume's size without a second daemon lookup.
-          mounted = facts(name="radarr", mounts=[
-              {"type": "bind", "source": "/data/radarr", "destination": "/config"},
-              {"type": "volume", "source": "media", "destination": "/media"},
-          ])
-          built = discovery.build_apps([mounted], [], {"apps": {"radarr": {"port": 7878}}}, set())
-          assert built[0].mounts == mounted.mounts
-
           # Appearance. These values are interpolated into a <style> block,
           # so anything that is not obviously a colour must be refused.
           look = S.Store(path)

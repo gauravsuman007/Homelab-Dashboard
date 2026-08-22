@@ -178,25 +178,16 @@
           {% endfor %}
         </div>
         {% endif %}
-        {% if vitals and (a.mem_used is not none or a.storage) %}
-        {# Usage is a supporting fact, not something to probe for: whatever
+        {% if vitals and a.mem_used is not none %}
+        {# Memory is a supporting fact, not something to probe for: whatever
            this refresh already measured is shown as-is, with no per-card
-           request of its own. A blank field just means that source declined
-           to answer this cycle -- the rest of the line still renders. #}
+           request of its own. Absent entirely if that read declined to answer
+           this cycle, rather than shown as a zero. #}
         <div class="usage">
-          {% if a.mem_used is not none %}
           <span class="use" data-usage="mem" title="{{ a.mem_used|bytes }} resident{% if a.mem_host_percent %}, {{ a.mem_host_percent }}% of host RAM{% endif %}">
             <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
             <span class="n">{{ a.mem_used|bytes }}</span>
           </span>
-          {% endif %}
-          {% if a.storage %}
-          <span class="use" data-usage="storage" title="{{ a.storage.container|bytes }} container layer{% if a.storage.volumes %} + {{ a.storage.volumes|bytes }} volumes{% endif %}{% if a.storage.binds %} + {{ a.storage.binds|bytes }} bind mounts{% endif %}{% if a.storage.bind_count and a.storage.binds is none %} ({{ a.storage.bind_count }} bind mount{{ 's' if a.storage.bind_count != 1 }} not measured){% endif %}">
-            <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><ellipse cx="8" cy="4" rx="5.5" ry="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 4v8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V4M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
-            <span class="n">{{ (a.storage.container + a.storage.volumes + (a.storage.binds or 0))|bytes }}</span>
-            {%- if a.storage.bind_count and a.storage.binds is none %}<sup>*</sup>{% endif %}
-          </span>
-          {% endif %}
         </div>
         {% endif %}
         <span class="grip" aria-hidden="true" title="Drag to another category">⠿</span>
@@ -217,9 +208,6 @@
 
 <footer>
   <span id="updated"></span> · <a href="/api/apps">JSON</a>
-  {% if unmeasured_binds %}
-  <span class="foot-note">· <sup>*</sup> bind-mounted storage isn't measured by default (set <code>MEASURE_BIND_MOUNTS=true</code>)</span>
-  {% endif %}
 </footer>
 
 {# Card editor. Kept in the page rather than built in JS so it is styled and
