@@ -178,16 +178,26 @@
           {% endfor %}
         </div>
         {% endif %}
-        {% if vitals and a.mem_used is not none %}
-        {# Memory is a supporting fact, not something to probe for: whatever
+        {% if vitals and (a.cpu_percent is not none or a.mem_used is not none) %}
+        {# Usage is a supporting fact, not something to probe for: whatever
            this refresh already measured is shown as-is, with no per-card
-           request of its own. Absent entirely if that read declined to answer
-           this cycle, rather than shown as a zero. #}
+           request of its own. Each figure is absent entirely if its read
+           declined to answer this cycle, rather than shown as a zero. CPU is
+           also absent for the first interval after a start, when there is
+           only one sample and so no rate to state yet. #}
         <div class="usage">
+          {% if a.cpu_percent is not none %}
+          <span class="use" data-usage="cpu" title="{{ a.cpu_percent }}% of one core, averaged over the last refresh — the same scale docker stats uses">
+            <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 2.2v2.3M9.5 2.2v2.3M6.5 11.5v2.3M9.5 11.5v2.3M2.2 6.5h2.3M2.2 9.5h2.3M11.5 6.5h2.3M11.5 9.5h2.3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            <span class="n">{{ a.cpu_percent }}%</span>
+          </span>
+          {% endif %}
+          {% if a.mem_used is not none %}
           <span class="use" data-usage="mem" title="{{ a.mem_used|bytes }} resident{% if a.mem_host_percent %}, {{ a.mem_host_percent }}% of host RAM{% endif %}">
             <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
             <span class="n">{{ a.mem_used|bytes }}</span>
           </span>
+          {% endif %}
         </div>
         {% endif %}
         <span class="grip" aria-hidden="true" title="Drag to another category">⠿</span>

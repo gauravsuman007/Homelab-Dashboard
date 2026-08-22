@@ -279,7 +279,7 @@ container, which on a normal install is the host's main disk.
 
 There is a **switch for this in the header** — the small bar-chart button, next
 to the palette. It is a real off switch, not a CSS one: with stats off the
-refresh loop stops asking the daemon for vitals and per-container memory
+refresh loop stops asking the daemon for vitals and per-container CPU/memory
 entirely, rather than measuring everything and then hiding it. Like the
 rest of the appearance settings it is shared and stored, so a dashboard turned
 quiet on a laptop is quiet on the wall tablet too.
@@ -290,22 +290,42 @@ can see it cannot be talked back into reporting on the machine. Stats are also
 hidden automatically in `compact` mode, since a Home Assistant dashboard already
 measures the host properly.
 
-## Per-container memory
+## Per-container CPU and memory
 
-Each card carries one more figure beneath its links, once discovery has run:
-the container's **actual resident memory**, with reclaimable page cache
-subtracted, the same figure `docker stats` shows. Hover it for the percentage
-of the *host's* total RAM — a container's own cgroup limit is usually unset,
-in which case Docker reports the limit as the entire machine, and a percentage
-against that would just be restating "how much RAM does this box have" on
-every card.
+Each card carries two figures beneath its links, once discovery has run:
 
-Getting this without stalling the page took a specific fix: the naive way to
-ask Docker for a single container's stats waits out a second sampling cycle
-(~1s) to compute a CPU delta this number does not need — measured at 40 seconds
-for a modest fleet, sequentially. Asking with `one_shot=true` skips that wait;
-measured at under a second for the same fleet, which is why this runs inline
-with every refresh rather than needing its own schedule.
+- **CPU** — the share of a core the container used over the last refresh
+  interval, on `docker stats`' own scale, where 100% is one core saturated. A
+  container using two cores of four reads 200%, not 50%; matching the tool
+  you would check this against matters more than capping the number at 100.
+- **Memory** — the container's actual resident usage, with reclaimable page
+  cache subtracted, again the same figure `docker stats` shows. Hover it for
+  the percentage of the *host's* total RAM: a container's own cgroup limit is
+  usually unset, in which case Docker reports the limit as the entire machine,
+  and a percentage against that would just be restating "how much RAM does
+  this box have" on every card.
+
+Both come from one call per container per refresh. Getting them without
+stalling the page took a specific fix: the naive way to ask Docker for a
+single container's stats waits out a second sampling cycle (~1s) to compute a
+CPU delta — measured at 40 seconds for a modest fleet, sequentially. Asking
+with `one_shot=true` skips that wait, at roughly 3ms per container.
+
+That wait is *how* the daemon computes CPU, though, so one-shot stats arrive
+with no percentage in them — only the two cumulative counters it would have
+been computed from. So the rate is taken here instead, between consecutive
+refreshes. For a dashboard that is better than the daemon's own: the window is
+the refresh interval rather than one second, the same window the host CPU
+meter uses, so a spike cannot show up in one figure and be missed by the other.
+
+A blank rather than a zero is shown wherever no honest rate exists — for the
+first interval after a container (or the dashboard) starts, since one sample
+is not a rate, and after a restart resets the counters.
+
+Both figures are covered by the stats switch in the header: turn stats off and
+these calls are not made at all, and the remembered CPU counters are dropped,
+so turning them back on measures a fresh interval rather than averaging across
+however long the switch was off.
 
 ## The nginx snippet
 
@@ -389,7 +409,7 @@ All optional, set in `docker-compose.yml`:
 | `EDGE_CONFIG_DIR` | unset | read proxy config from a mount instead of the API |
 | `FAVICON_FALLBACK` | `true` | ask services for their own favicon when the icon set misses |
 | `ALLOW_EDIT` | `true` | enable edit mode and the endpoints that write to it |
-| `SHOW_STATS` | `true` | allow stats at all: the vitals strip, per-container memory, and the header switch for them |
+| `SHOW_STATS` | `true` | allow stats at all: the vitals strip, per-container CPU/memory, and the header switch for them |
 | `CUSTOMISATIONS_PATH` | `/config/customisations.json` | where edit-mode changes are stored |
 | `ICON_MISS_TTL_HOURS` | `24` | how long a "no icon found" result is remembered |
 

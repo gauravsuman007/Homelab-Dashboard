@@ -204,9 +204,9 @@ body {
 .pub:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .pub svg { flex: 0 0 auto; }
 
-/* Per-card memory. An icon-and-number pair rather than a labelled row, so it
-   stays a single unobtrusive line even on the narrowest card -- the share of
-   host RAM is one hover away in the title attribute. */
+/* Per-card CPU and memory. Icon-and-number pairs rather than labelled rows,
+   so this stays a single unobtrusive line even on the narrowest card -- the
+   detail behind each figure is one hover away in the title attribute. */
 .usage {
   display: flex;
   gap: 12px;

@@ -252,6 +252,36 @@ jobs:
           assert stats._memory_from_stats({"memory_stats": {}}) is None, "a stopped container is not an error"
           assert stats._memory_from_stats({}) is None
 
+          # Per-container CPU. One-shot stats carry no percentage -- skipping
+          # the daemon's own sampling wait is the whole point of them -- so the
+          # rate is differenced between consecutive refreshes here instead.
+          def sample(total, system, cpus=4):
+              return stats.Usage(mem_used=0, cpu_total=total, cpu_system=system, online_cpus=cpus)
+
+          # Docker's own scale: 100% is one core, so a quarter of a 4-core
+          # machine's total is one full core, and reads as 100 rather than 25.
+          assert stats.cpu_percent_between(sample(0, 0), sample(250, 1000)) == 100.0
+          assert stats.cpu_percent_between(sample(0, 0), sample(125, 1000)) == 50.0
+          assert stats.cpu_percent_between(sample(1000, 5000), sample(1000, 6000)) == 0.0
+
+          # Every way there is no honest rate to state must read as blank, not
+          # as zero: a first sample, a restarted counter, a stalled clock.
+          assert stats.cpu_percent_between(None, sample(1, 2)) is None, "one sample is not a rate"
+          assert stats.cpu_percent_between(sample(500, 1000), sample(10, 2000)) is None, "a restart is not 0%"
+          assert stats.cpu_percent_between(sample(0, 1000), sample(10, 1000)) is None, "no elapsed time"
+          assert stats.cpu_percent_between(sample(0, None), sample(10, 100)) is None
+
+          # One-shot payloads are parsed into the counters, and a stopped
+          # container still yields nothing at all rather than a zeroed sample.
+          live = stats._usage_from_stats({
+              "memory_stats": {"usage": 1000, "stats": {"inactive_file": 300}},
+              "cpu_stats": {"cpu_usage": {"total_usage": 820}, "system_cpu_usage": 90000, "online_cpus": 4},
+          })
+          assert (live.mem_used, live.cpu_total, live.cpu_system, live.online_cpus) == (700, 820, 90000, 4)
+          assert stats._usage_from_stats({}) is None
+          # online_cpus missing must not divide by zero or crash the refresh.
+          assert stats._usage_from_stats({"cpu_stats": {"cpu_usage": {"total_usage": 1}}}).online_cpus == 1
+
           # Appearance. These values are interpolated into a <style> block,
           # so anything that is not obviously a colour must be refused.
           look = S.Store(path)

@@ -124,6 +124,13 @@ _state: dict = {
 # memory only, so a restart re-learns rather than carrying a stale guess.
 _seen_hosts: set[str] = set()
 
+# The previous refresh's raw CPU counters, by container name. A percentage is
+# a rate, so it needs two samples: the daemon's one-shot stats carry only the
+# running totals, and the difference between consecutive refreshes is taken
+# here. Cleared whenever stats are off, so switching them back on measures a
+# fresh interval rather than averaging across however long they were off.
+_cpu_previous: dict = {}
+
 store = store_module.Store(CUSTOMISATIONS_PATH)
 
 # Set by an edit to make the refresh loop reconcile now rather than at the end of
@@ -245,11 +252,26 @@ def _refresh() -> None:
 
         if stats_on:
             host_mem_total = vitals.mem_total if vitals else None
+            samples = {}
             for item in apps:
-                if item.running:
-                    item.mem_used = stats_module.container_memory(client, item.key)
-                    if item.mem_used is not None and host_mem_total:
-                        item.mem_host_percent = round(100 * item.mem_used / host_mem_total, 1)
+                if not item.running:
+                    continue
+                usage = stats_module.container_usage(client, item.key)
+                if usage is None:
+                    continue
+                samples[item.key] = usage
+                item.mem_used = usage.mem_used
+                if item.mem_used is not None and host_mem_total:
+                    item.mem_host_percent = round(100 * item.mem_used / host_mem_total, 1)
+                item.cpu_percent = stats_module.cpu_percent_between(
+                    _cpu_previous.get(item.key), usage)
+            # Replaced wholesale rather than updated, so a container that has
+            # gone away does not leave a counter behind for a later container
+            # of the same name to be differenced against.
+            _cpu_previous.clear()
+            _cpu_previous.update(samples)
+        else:
+            _cpu_previous.clear()
     finally:
         client.close()
 

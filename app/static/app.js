@@ -243,10 +243,11 @@
     return (n / scale).toFixed(1) + " " + unit;
   }
 
-  // Per-card memory changes slowly, so this only updates the number already
-  // on the page. It does not add the line to a card that does not have one
-  // yet (e.g. a container that just started): that appears on the next full
-  // page load, same as a new card would.
+  // Per-card usage changes slowly, so this only updates numbers already on
+  // the page rather than building markup a template already owns. Returns
+  // true when a figure has arrived that the card has no place for -- a CPU
+  // percentage on the refresh after a start, most often -- which the caller
+  // answers with a reload, the same way it handles a new card.
   function paintUsage(card, item) {
     var mem = card.querySelector('[data-usage="mem"]');
     if (mem && item.mem_used !== null && item.mem_used !== undefined) {
@@ -254,6 +255,16 @@
       mem.title = formatBytes(item.mem_used) + " resident" +
         (item.mem_host_percent ? ", " + item.mem_host_percent + "% of host RAM" : "");
     }
+    var cpu = card.querySelector('[data-usage="cpu"]');
+    if (cpu && item.cpu_percent !== null && item.cpu_percent !== undefined) {
+      cpu.querySelector(".n").textContent = item.cpu_percent + "%";
+      cpu.title = item.cpu_percent + "% of one core, averaged over the last refresh"
+        + " — the same scale docker stats uses";
+    }
+    // Only where a usage line exists at all: compact mode renders none by
+    // design, and reloading for a figure it will never show would be a loop.
+    return !cpu && !!card.querySelector(".usage")
+      && item.cpu_percent !== null && item.cpu_percent !== undefined;
   }
 
   function poll() {
@@ -272,7 +283,7 @@
           card.classList.toggle("down", item.online === false);
           card.classList.toggle("idle", item.online === null);
           card.classList.toggle("stopped", !item.running);
-          paintUsage(card, item);
+          if (paintUsage(card, item)) { window.location.reload(); return; }
         });
         if (statOnline) statOnline.innerHTML = "<strong>" + up + "</strong>/" + data.apps.length + " up";
         paintVitals(data.vitals);

@@ -297,7 +297,7 @@ def read_vitals(client=None) -> Vitals:
 
 
 # --------------------------------------------------------------------------
-# Per-container memory
+# Per-container memory and CPU
 # --------------------------------------------------------------------------
 #
 # A container's own cgroup memory limit is usually unset, in which case Docker
@@ -309,14 +309,38 @@ def read_vitals(client=None) -> Vitals:
 #
 # The naive way to ask Docker for this, ``stats(stream=False)``, is not a
 # snapshot: the daemon waits out a second sampling cycle (~1s) to compute a CPU
-# delta even when only memory is wanted, which measured at roughly 1.5s per
-# container -- 40s for a modest fleet, sequentially. ``one_shot=True`` skips
-# that wait; measured at ~8ms per container, which is why this is called
-# sequentially per refresh rather than needing the thread-per-probe treatment
-# the port checks use.
+# delta, which measured at roughly 1.5s per container -- 40s for a modest
+# fleet, sequentially. ``one_shot=True`` skips that wait; measured at ~3ms per
+# container, which is why this is called sequentially per refresh rather than
+# needing the thread-per-probe treatment the port checks use.
+#
+# The catch is that the wait is how the daemon gets its CPU delta, so one-shot
+# stats arrive with ``precpu_stats`` zeroed and no percentage in them. What
+# they do carry are the two cumulative counters the percentage is computed
+# from, so the delta is taken here instead, between consecutive refreshes.
+# That is strictly better for a dashboard than the daemon's own: the window is
+# the refresh interval rather than one second, which is the same window the
+# host CPU meter uses, so a spike does not show up in one figure and not the
+# other.
 
-def container_memory(client, key: str) -> int | None:
-    """Bytes of resident memory a container is actually using, or None.
+
+@dataclass(frozen=True)
+class Usage:
+    """One container's raw usage counters, as of one moment.
+
+    The CPU fields are cumulative totals, not rates -- meaningless alone, and
+    turned into a percentage by ``cpu_percent_between`` against an earlier
+    sample of the same container.
+    """
+
+    mem_used: int | None
+    cpu_total: int | None
+    cpu_system: int | None
+    online_cpus: int
+
+
+def container_usage(client, key: str) -> Usage | None:
+    """One container's memory and CPU counters, or None.
 
     None means "not currently measurable" -- a stopped container (whose stats
     are an empty ``{}``, not an error) as much as an unreachable one. Both are
@@ -327,7 +351,25 @@ def container_memory(client, key: str) -> int | None:
     except Exception as exc:  # daemon hiccup, or the container vanished mid-scan
         log.debug("stats unavailable for %s: %s", key, exc)
         return None
-    return _memory_from_stats(payload)
+    return _usage_from_stats(payload)
+
+
+def _usage_from_stats(payload: dict) -> Usage | None:
+    payload = payload or {}
+    mem_used = _memory_from_stats(payload)
+    cpu = (payload.get("cpu_stats") or {})
+    total = (cpu.get("cpu_usage") or {}).get("total_usage")
+    if mem_used is None and total is None:
+        return None
+    return Usage(
+        mem_used=mem_used,
+        cpu_total=None if total is None else int(total),
+        cpu_system=cpu.get("system_cpu_usage"),
+        # percpu_usage is empty under one-shot, so online_cpus is the only
+        # count available here; 1 keeps the arithmetic sane if it is missing
+        # too, at the cost of under-reporting rather than dividing by zero.
+        online_cpus=int(cpu.get("online_cpus") or 1),
+    )
 
 
 def _memory_from_stats(payload: dict) -> int | None:
@@ -341,3 +383,26 @@ def _memory_from_stats(payload: dict) -> int | None:
     sub = mem.get("stats") or {}
     cache = sub.get("inactive_file", sub.get("total_inactive_file", sub.get("cache", 0)))
     return max(int(usage) - int(cache or 0), 0)
+
+
+def cpu_percent_between(previous: Usage | None, current: Usage | None) -> float | None:
+    """Percent of one CPU core used between two samples, or None.
+
+    The scale is ``docker stats``' own -- 100% is one core saturated, so a
+    container using two of four cores reads 200%, not 50%. Matching the tool
+    people will check this against matters more than capping it at 100.
+
+    None whenever no honest figure exists: the first sample of a container
+    (nothing to difference against), a counter that went backwards or stood
+    still (a restart, or a host clock the daemon re-based), or a missing
+    counter. A blank is the truthful answer there; a zero would not be.
+    """
+    if previous is None or current is None:
+        return None
+    if None in (previous.cpu_total, current.cpu_total, previous.cpu_system, current.cpu_system):
+        return None
+    cpu_delta = current.cpu_total - previous.cpu_total
+    system_delta = current.cpu_system - previous.cpu_system
+    if system_delta <= 0 or cpu_delta < 0:
+        return None
+    return round(100.0 * cpu_delta / system_delta * current.online_cpus, 1)

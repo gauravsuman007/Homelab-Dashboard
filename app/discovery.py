@@ -181,6 +181,7 @@ class App:
     # container's memory cannot keep its card off the page.
     mem_used: int | None = None
     mem_host_percent: float | None = None
+    cpu_percent: float | None = None
 
     def lan_url(self, request_host: str | None) -> str | None:
         """The LAN URL as seen from ``request_host`` (a bare host, no port)."""
@@ -204,6 +205,7 @@ class App:
             "online": self.online,
             "mem_used": self.mem_used,
             "mem_host_percent": self.mem_host_percent,
+            "cpu_percent": self.cpu_percent,
             "derived": {
                 "name": self.derived_name,
                 "icon": self.derived_icon,
